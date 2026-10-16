@@ -1713,7 +1713,7 @@ function mountInterface() {
   root.id = 'em-app';
   root.innerHTML = `
     <header class="topbar">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">∿</span><div><strong>EM Simulator</strong><small>Electromagnetic workspace</small></div></div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">∿</span><div><strong>EM Simulator</strong><small>Electromagnetic sandbox</small></div></div>
       <button id="em-play" title="Pause / resume (Space)">Ⅱ Pause</button>
       <label class="top-control">Examples <select id="em-example" aria-label="Load example scene">
         <option value="">Load example…</option>
