@@ -520,6 +520,80 @@ class PassiveWire extends Antenna {
   getSelectionPoints() { return [screenPoint(this.endPointA),screenPoint(this.endPointB)]; }
 }
 
+
+// The user draws the trace of an INFINITE PEC plane. The plane is perpendicular
+// to the XY screen (its normal is in XY), and extends indefinitely in z.
+class PECPlane extends Antenna {
+  constructor(wavelength,a,b) {
+    super(wavelength,0,0);
+    this.endPointA=[...a]; this.endPointB=[...b];
+    const dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy);
+    if(!(L>.08))throw Error('Choose two distinct points for the PEC plane');
+    this.tangent=[dx/L,dy/L];this.normal=[-dy/L,dx/L];
+  }
+  signedDistance(p){return (p[0]-this.endPointA[0])*this.normal[0]+(p[1]-this.endPointA[1])*this.normal[1];}
+  side(p){const d=this.signedDistance(p);return d>0?1:d<0?-1:0;}
+  mirrorPoint(p){const d=2*this.signedDistance(p);return [p[0]-d*this.normal[0],p[1]-d*this.normal[1]];}
+  // For a PEC electric CURRENT image, Jimage = (2*n*n^T - I)*J.
+  mirrorCurrent(v){
+    const n=this.normal;
+    const a=2*(n[0]*v[0]+n[1]*v[1]),b=2*(n[0]*v[2]+n[1]*v[3]);
+    return [a*n[0]-v[0],a*n[1]-v[1],b*n[0]-v[2],b*n[1]-v[3]];
+  }
+  getProperties(){return [];}
+  getReadouts(){return [['Model','Infinite PEC plane'],['Drawn trace length',length2D(this.endPointA,this.endPointB).toFixed(3)],['Plane normal (°)',(Math.atan2(this.normal[1],this.normal[0])*180/Math.PI).toFixed(1)]];}
+  getNotes(){return [{text:'The two points define an infinite, zero-thickness perfect electric conductor, perpendicular to the canvas.'},
+    {text:'Fields on each side are computed independently using mirrored electric-current images. There is no transmission through the plane. Passive PEC wires include reflected coupling in the MoM system.'},
+    {text:'The displayed arrows on the conductor trace show the induced sheet-current density in the simulation slice. In this 2D model it is tangent to the trace, and is computed from the magnetic-field jump across the two sides of the plane.'},
+    {warning:true,text:'Sources and passive wires must remain entirely on one side.'}];}
+  getHitEdges(){
+    const trace=planeScreenTrace(this,16);
+    return trace?[{a:trace.slice(0,2),b:trace.slice(2,4),width:16}]:[];
+  }
+  getSelectionPoints(){return [screenPoint(this.endPointA),screenPoint(this.endPointB)];}
+  getDisplayEdges(){return [];}
+}
+function currentPECPlane(){return antennas.find(a=>a instanceof PECPlane)||null;}
+function planeGeometryError(plane,components){
+  if(!plane)return null;
+  for(const a of components){
+    if(a instanceof PECPlane)continue;
+    let points=[],clearance=1e-5;
+    if(a instanceof PassiveWire){points=[a.endPointA,a.endPointB];clearance=a.radius*1.001;}
+    else if(a instanceof Dipole){points=[a.endPointA,a.endPointB];}
+    else if(a instanceof HertzianDipole){points=[a.position];}
+    else if(a instanceof SmallLoop){points=[a.center];clearance=a.radius+1e-5;}
+    else if(a instanceof LinearArray){
+      // Array elements are physically separate: elements on both sides are OK,
+      // provided none of the actual dipoles/loops intersects the plane.
+      if(a.elementType==='smallLoop'){
+        for(const element of a.elements){
+          if(Math.abs(plane.signedDistance(element.center))<=element.radius+1e-5)
+            return (a.label||'Array')+' contains a loop intersecting the PEC plane';
+        }
+      }else for(const p of a.segments)if(Math.abs(plane.signedDistance(p))<=1e-5)
+        return (a.label||'Array')+' contains a dipole on the PEC plane';
+      continue;
+    }else points=a.segments||[];
+    if(!points.length)continue;
+    const distances=points.map(p=>plane.signedDistance(p)),min=Math.min(...distances),max=Math.max(...distances);
+    if(min<=clearance&&max>=-clearance)return (a.label||'Component')+' intersects or touches the PEC plane';
+  }
+  return null;
+}
+// A mirror wire has mirrored GEOMETRY tangent. Electric current image differs by
+// an overall minus sign from that mirrored tangent (handled by assembly below).
+const mirroredWireCache=new WeakMap();
+function momMirroredWire(w,plane){
+  const key=JSON.stringify([momWireKey(w),plane.endPointA,plane.endPointB,w.targetLength]);
+  const cached=mirroredWireCache.get(w);
+  if(cached&&cached.key===key)return cached.wire;
+  const mirror=new PassiveWire(w.wavelength,plane.mirrorPoint(w.endPointA),plane.mirrorPoint(w.endPointB));
+  mirror.radius=w.radius;mirror.targetLength=w.targetLength;mirror.rebuild();
+  mirroredWireCache.set(w,{key,wire:mirror});
+  return mirror;
+}
+
 const WIRE_GAUSS_NODES=[-.8611363115940526,-.3399810435848563,.3399810435848563,.8611363115940526];
 const WIRE_GAUSS_WEIGHTS=[.3478548451374538,.6521451548625461,.6521451548625461,.3478548451374538];
 const MAX_PASSIVE_UNKNOWNS=320;
@@ -670,24 +744,36 @@ function momAssemble(wires){
   let n=0;for(const w of wires){w.solveOffset=n;n+=w.meshCount-1;}
   if(n>MAX_PASSIVE_UNKNOWNS)throw Error('Limit '+MAX_PASSIVE_UNKNOWNS+' passive unknowns; increase segment length or remove wires');
   const ar=new Float64Array(n*n),ai=new Float64Array(n*n);
+  const plane=currentPECPlane();
   for(let wa=0;wa<wires.length;wa++)for(let wb=wa;wb<wires.length;wb++){
-    const a=wires[wa],b=wires[wb],block=wa===wb?momSelfBlock(a):momMutualBlock(a,b);
+    const a=wires[wa],b=wires[wb];
+    // Opposite half-spaces of an infinite PEC plane are fully decoupled.
+    if(plane&&plane.side(a.endPointA)!==plane.side(b.endPointA))continue;
+    const block=wa===wb?momSelfBlock(a):momMutualBlock(a,b);
+    const reflected=plane?momMutualBlock(a,momMirroredWire(b,plane)):null;
     for(let i=0;i<block.rows;i++)for(let j=0;j<block.cols;j++){
       const q=i*block.cols+j,row=a.solveOffset+i,col=b.solveOffset+j;
-      ar[row*n+col]=block.re[q];ai[row*n+col]=block.im[q];
-      if(wa!==wb){ar[col*n+row]=block.re[q];ai[col*n+row]=block.im[q];}
+      // Mirrored wire's positive axial current is geometrically reflected;
+      // its PEC image current is the NEGATIVE of that direction.
+      const re=block.re[q]-(reflected?reflected.re[q]:0);
+      const im=block.im[q]-(reflected?reflected.im[q]:0);
+      ar[row*n+col]=re;ai[row*n+col]=im;
+      if(wa!==wb){ar[col*n+row]=re;ai[col*n+row]=im;}
     }
   }
   return {ar,ai,n};
 }
 function momExcitation(wires){
   const n=wires.reduce((sum,w)=>sum+w.meshCount-1,0),br=new Float64Array(n),bi=new Float64Array(n);
-  const active=antennas.filter(a=>!(a instanceof PassiveWire)),out=new Float64Array(6);
+  const active=antennas.filter(a=>!(a instanceof PassiveWire)&&!(a instanceof PECPlane)),out=new Float64Array(6);
+  const plane=currentPECPlane();
   for(const w of wires){
     let map=momExcitationCache.get(w);if(!map){map=new WeakMap();momExcitationCache.set(w,map);}
-    const key=JSON.stringify([momWireKey(w),k,freq]);
+    const key=JSON.stringify([momWireKey(w),k,freq,plane?[plane.endPointA,plane.endPointB]:null]);
     let samples=null;
     for(const a of active){
+      // Infinite PEC sheet: a source across the sheet cannot excite this wire.
+      if(plane&&!a.segments.some(p=>plane.side(w.endPointA)===plane.side(p)))continue;
       let unit=map.get(a);
       if(!unit||unit.key!==key||unit.segments!==a.segments||unit.currents!==a.currentSegments||unit.lengths!==a.segmentLengths||unit.radius!==sourceRadius(a)){
         if(!samples)samples=momTestSamples(w,Math.min(w.meshLength,c/freq/10),8);
@@ -697,7 +783,13 @@ function momExcitation(wires){
           out.fill(0);
           for(let j=0;j<a.segments.length;j++){
             const v=a.currentSegments[j],L=a.segmentLengths[j]/ring.length,moment=[L*v[0],L*v[1],L*v[2],L*v[3]];
-            for(const r of ring)addElementField(out,q.p[0]+r[0],q.p[1]+r[1],a.segments[j],moment,Math.hypot(sourceRadius(a),r[2]));
+            for(const r of ring){
+              const x=q.p[0]+r[0],y=q.p[1]+r[1],src=a.segments[j];
+              if(!plane||plane.side([x,y])===plane.side(src)){
+                addElementField(out,x,y,src,moment,Math.hypot(sourceRadius(a),r[2]));
+                if(plane)addElementField(out,x,y,plane.mirrorPoint(src),plane.mirrorCurrent(moment),Math.hypot(sourceRadius(a),r[2]));
+              }
+            }
           }
           const re=w.tangent[0]*out[0]+w.tangent[1]*out[2],im=w.tangent[0]*out[1]+w.tangent[1]*out[3];
           for(const [i,f] of q.hats){unit.re[i]-=q.weight*f*re;unit.im[i]-=q.weight*f*im;}
@@ -739,13 +831,13 @@ function solveFactoredComplex(lu,br,bi){
 }
 function solveComplex(ar,ai,br,bi,n){return solveFactoredComplex(factorComplex(ar,ai,n),br,bi);}
 function solvePassiveWires(){
-  const wires=antennas.filter(a=>a instanceof PassiveWire),sig=antennas.map(a=>[a,a.segments,a instanceof PassiveWire?null:a.currentSegments,a.I0.a,a.I0.b,sourceRadius(a)]);
+  const wires=antennas.filter(a=>a instanceof PassiveWire),plane=currentPECPlane(),sig=antennas.map(a=>[a,a.segments,a instanceof PassiveWire?null:a.currentSegments,a.I0.a,a.I0.b,sourceRadius(a),a instanceof PECPlane?[...a.endPointA,...a.endPointB].join(','):null]);
   if(passiveSignature&&passiveSignature.k===k&&passiveSignature.freq===freq&&sig.length===passiveSignature.sig.length&&sig.every((v,i)=>v.every((x,j)=>x===passiveSignature.sig[i][j])))return;
   passiveSignature=null;passiveSolveInfo={message:wires.length?'Solving…':'No passive wires',error:false};
   if(!wires.length){momMatrixCache=null;return;}
   momLastStats={selfHits:0,selfBuilds:0,pairHits:0,pairBuilds:0,factorReused:false};const begin=performance.now();
   try{
-    const key=JSON.stringify([k,freq,wires.map(momWireKey)]);let matrix;
+    const key=JSON.stringify([k,freq,wires.map(momWireKey),plane?[plane.endPointA,plane.endPointB]:null]);let matrix;
     if(momMatrixCache&&momMatrixCache.key===key){matrix=momMatrixCache;let offset=0;for(const w of wires){w.solveOffset=offset;offset+=w.meshCount-1;}momLastStats.factorReused=true;}
     else{matrix=momAssemble(wires);matrix.lu=factorComplex(matrix.ar,matrix.ai,matrix.n);matrix.key=key;momMatrixCache=matrix;}
     const {ar,ai,n}=matrix,{br,bi}=momExcitation(wires),[xr,xi]=solveFactoredComplex(matrix.lu,br,bi);
@@ -1066,7 +1158,9 @@ function fieldWorkerMain(scope) {
     do {
       const col=j.index%33,row=Math.floor(j.index/33),x=(j.tx*32+col)*j.step,y=(j.ty*32+row)*j.step;
       let exr=0,exi=0,eyr=0,eyi=0,br=0,bi=0;
-      for(let n=0;n<e.length;n+=7){
+      const side=scene.plane?(scene.plane.nx*(x-scene.plane.x)+scene.plane.ny*(y-scene.plane.y)>=0?1:-1):0;
+      for(let n=0;n<e.length;n+=8){
+        if(scene.plane&&side!==e[n+7])continue;
         const dx=x-e[n],dy=y-e[n+1],R=Math.hypot(dx,dy,e[n+6]),inv=1/R,kr=scene.k*R;
         const gr=Math.cos(kr)*inv,gi=-Math.sin(kr)*inv;
         const hr=-gr*inv*inv+scene.k*gi*inv,hi=-gi*inv*inv-scene.k*gr*inv;
@@ -1210,9 +1304,9 @@ function requestCameraUpdate(){
 // physics even when a UI callback exits before requestFieldUpdate().
 let solvedFieldModel=null;
 function captureFieldModel() {
-  return [freq,sLength,resolution,...antennas.flatMap(a=>[
+  return [freq,c,sLength,resolution,...antennas.flatMap(a=>[
     a,a.segments,a instanceof PassiveWire?null:a.currentSegments,
-    a.segmentLengths,a.I0.a,a.I0.b,sourceRadius(a)
+    a.segmentLengths,a.I0.a,a.I0.b,sourceRadius(a),a instanceof PECPlane?[...a.endPointA,...a.endPointB].join(','):null
   ])];
 }
 function ensureFieldModelCurrent() {
@@ -1224,12 +1318,34 @@ function ensureFieldModelCurrent() {
 function startProcessingNewSetup(){
   const begin=performance.now(),dl=resolution===1?dl_lr:resolution===2?dl_mr:dl_hr;
   for(const a of antennas)a.setDl(dl);
-  k=2*Math.PI*freq/c;solvePassiveWires();
+  k=2*Math.PI*freq/c;
+  const plane=currentPECPlane();
+  const geometryError=planeGeometryError(plane,antennas);
+  if(geometryError){
+    // Retain the previous display and expose the geometry error rather than
+    // attempting an invalid half-space image solution on every frame.
+    fieldTiles.dirtyPhysics=false;processingScheduled=false;waitProcess=false;
+    simulate=false;resetTemporalCache();
+    passiveSolveInfo={message:geometryError,error:true};
+    solvedFieldModel=captureFieldModel();
+    if(selectedComponent)renderInspector();
+    return;
+  }
+  solvePassiveWires();
   const elements=[];
-  for(const a of antennas){const drive=a.I0;
+  for(const a of antennas){
+    if(a instanceof PECPlane)continue;
+    const drive=a.I0;
     for(let i=0;i<a.segments.length;i++){
       const v=a.currentSegments[i],L=a.segmentLengths[i],jr=L*(v[0]*drive.a-v[2]*drive.b),yr=L*(v[1]*drive.a-v[3]*drive.b),ji=L*(v[0]*drive.b+v[2]*drive.a),yi=L*(v[1]*drive.b+v[3]*drive.a);
-      if(jr||yr||ji||yi)elements.push(a.segments[i][0],a.segments[i][1],jr,yr,ji,yi,sourceRadius(a));
+      if(jr||yr||ji||yi){
+        const p=a.segments[i],radius=sourceRadius(a),side=plane?plane.side(p):0;
+        elements.push(p[0],p[1],jr,yr,ji,yi,radius,side);
+        if(plane){
+          const mp=plane.mirrorPoint(p),mj=plane.mirrorCurrent([jr,yr,ji,yi]);
+          elements.push(mp[0],mp[1],mj[0],mj[1],mj[2],mj[3],radius,side);
+        }
+      }
     }
   }
   if(fieldTiles.currentComplete||!fieldTiles.previous){
@@ -1238,11 +1354,13 @@ function startProcessingNewSetup(){
   fieldTiles.currentComplete=false;
   fieldTiles.epoch++;fieldTiles.baseStep=sLength/Scale;fieldTiles.dirtyPhysics=false;fieldTiles.ready=false;fieldTiles.pending=null;fieldTiles.queue=[];fieldTiles.viewKey='';
   for(const [key,t] of fieldTiles.cache)if(t.epoch!==fieldTiles.previous)fieldTiles.cache.delete(key);
-  fieldTiles.scene={kind:'scene',epoch:fieldTiles.epoch,k,omega:2*Math.PI*freq,elements:new Float64Array(elements)};
+  fieldTiles.scene={kind:'scene',epoch:fieldTiles.epoch,k,omega:2*Math.PI*freq,
+    plane:plane?{x:plane.endPointA[0],y:plane.endPointA[1],nx:plane.normal[0],ny:plane.normal[1]}:null,
+    elements:new Float64Array(elements)};
   fieldTiles.revision++;fieldTiles.received=0;fieldWorkerInit();fieldTiles.worker.postMessage(fieldTiles.scene);
   solvedFieldModel=captureFieldModel();
   simulate=true;processingScheduled=false;waitProcess=true;
-  lastProcessingStats={solveMs:performance.now()-begin,sources:elements.length/7};
+  lastProcessingStats={solveMs:performance.now()-begin,sources:elements.length/8,hasPEC:!!plane};
   fieldPlan(true);if(selectedComponent instanceof PassiveWire)renderInspector();
 }
 let visibleFields=null,fieldImage=null,visibleStamp='',frameCos=1,frameSin=0,lastFramePhase=NaN;
@@ -1259,7 +1377,7 @@ function refreshVisibleFields(force=false){
     visibleFields={...view,ExRe:new Float64Array(size),ExIm:new Float64Array(size),EyRe:new Float64Array(size),EyIm:new Float64Array(size),BRe:new Float64Array(size),BIm:new Float64Array(size),valid:new Uint8Array(size),stale:new Uint8Array(size)};
     fieldImage=createImage(view.cols,view.rows);fieldImage.loadPixels();
   }
-  const f=visibleFields,arrays=[f.ExRe,f.ExIm,f.EyRe,f.EyIm,f.BRe,f.BIm],memos=new Map();let previews=0,stale=0,missing=0;
+  const f=visibleFields,arrays=[f.ExRe,f.ExIm,f.EyRe,f.EyIm,f.BRe,f.BIm],memos=new Map(),usedTiles=new Set();let previews=0,stale=0,missing=0;
   const epochs=[{epoch:fieldTiles.epoch,step:fieldTiles.baseStep,old:false},{epoch:fieldTiles.previous,step:fieldTiles.previousStep,old:true}];
   function lookup(ep,l,x,y){
     const key=ep+':'+l;let memo=memos.get(key);
@@ -1268,22 +1386,42 @@ function refreshVisibleFields(force=false){
     memos.set(key,{x,y,tile});return tile;
   }
   const worldStep=sLength/Scale*2**level,levels=[...new Set([level,level+1,level+2,level+3,0,1,2,3,4,5])];
+  const plane=fieldTiles.scene?.plane;
   for(let row=0;row<view.rows;row++)for(let col=0;col<view.cols;col++){
-    const idx=row*view.cols+col,wx=(view.x0+col)*worldStep,wy=(view.y0-row)*worldStep;let chosen=null,gx=0,gy=0,old=false,chosenLevel=level;
+    const idx=row*view.cols+col,wx=(view.x0+col)*worldStep,wy=(view.y0-row)*worldStep;let chosen=null,gx=0,gy=0,old=false,chosenLevel=level,chosenStep=worldStep;
     for(const ep of epochs){if(!ep.epoch||!ep.step)continue;
       // Fine first, then coarser previews. Other levels retain pan/zoom history.
       for(const l of levels){const step=ep.step*2**l,x=wx/step,y=wy/step,tx=Math.floor(x/32),ty=Math.floor(y/32),tile=lookup(ep.epoch,l,tx,ty);
-        if(tile){chosen=tile;gx=x-tx*32;gy=y-ty*32;old=ep.old;chosenLevel=l;break;}}
+        if(tile){chosen=tile;gx=x-tx*32;gy=y-ty*32;old=ep.old;chosenLevel=l;chosenStep=step;break;}}
       if(chosen)break;
     }
     f.valid[idx]=chosen?1:0;f.stale[idx]=old?1:0;
     if(!chosen){missing++;for(const a of arrays)a[idx]=0;continue;}
+    usedTiles.add(fieldTileKey(chosen.epoch,chosenLevel,chosen.tx,chosen.ty));
     if(old)stale++;if(chosenLevel!==level||old)previews++;
     const x0=Math.max(0,Math.min(31,Math.floor(gx))),y0=Math.max(0,Math.min(31,Math.floor(gy))),u=Math.max(0,Math.min(1,gx-x0)),v=Math.max(0,Math.min(1,gy-y0)),d=chosen.data;
     const p=(y0*33+x0)*6,q=p+6,r=p+33*6,s=r+6;
-    for(let c=0;c<6;c++)arrays[c][idx]=(1-v)*((1-u)*d[p+c]+u*d[q+c])+v*((1-u)*d[r+c]+u*d[s+c]);
+    let a=(1-v)*(1-u),b=(1-v)*u,cc=v*(1-u),dd=v*u;
+    // Do not bilinearly blend field samples from opposite half-spaces:
+    // that would create spurious transmission across the ideal PEC boundary.
+    if(plane){
+      const planeSide=(px,py)=>((px-plane.x)*plane.nx+(py-plane.y)*plane.ny>=0?1:-1);
+      const side=planeSide(wx,wy),x0w=(chosen.tx*32+x0)*chosenStep,y0w=(chosen.ty*32+y0)*chosenStep;
+      if(planeSide(x0w,y0w)!==side)a=0;
+      if(planeSide(x0w+chosenStep,y0w)!==side)b=0;
+      if(planeSide(x0w,y0w+chosenStep)!==side)cc=0;
+      if(planeSide(x0w+chosenStep,y0w+chosenStep)!==side)dd=0;
+      const total=a+b+cc+dd;
+      if(total>1e-12){a/=total;b/=total;cc/=total;dd/=total;}
+      // Very close to a plane with no same-side lattice corner, a nearest
+      // original corner is the best available preview until finer tiles arrive.
+      else {a=(1-v)*(1-u);b=(1-v)*u;cc=v*(1-u);dd=v*u;}
+    }
+    for(let c=0;c<6;c++)arrays[c][idx]=a*d[p+c]+b*d[q+c]+cc*d[r+c]+dd*d[s+c];
   }
-  f.previousFreq=fieldTiles.previousFreq;fieldTiles.preview=!!previews;fieldTiles.stalePixels=stale;fieldTiles.missingPixels=missing;
+  f.previousFreq=fieldTiles.previousFreq;
+  f.cacheSignature=[view.x0,view.y0,level,fieldTiles.epoch,fieldTiles.previousFreq,...[...usedTiles].sort()].join('|');
+  fieldTiles.preview=!!previews;fieldTiles.stalePixels=stale;fieldTiles.missingPixels=missing;
 }
 
 // Sample the animated field on a screen-space lattice independent of field quality.
@@ -1306,15 +1444,31 @@ function sampleArrowField(f, screenX, screenY, ct, st, oldCos, oldSin, out) {
   return true;
 }
 
-function renderFields() {
-  if (simulate) {
-
-    updateFramePhase();
-    refreshVisibleFields();
-    const f = visibleFields;
-    const fieldPixels = fieldImage.pixels;
+// Bucketed, bounded, lazy temporal image cache. The images are ONLY the costly
+// heatmap, not the wires, chevrons or selection/UI (which stay phase-accurate).
+// Adjacent cached phases are alpha-blended to avoid quantization judder.
+const temporalCache={enabled:true,key:'',frames:[],count:0,hits:0,misses:0,
+  rasterMs:0,cacheMs:0,rasterCount:0,drawCount:0,reason:'Warming up'};
+function resetTemporalCache(){temporalCache.key='';temporalCache.frames=[];temporalCache.count=0;
+  temporalCache.hits=0;temporalCache.misses=0;temporalCache.rasterMs=0;
+  temporalCache.cacheMs=0;temporalCache.rasterCount=0;temporalCache.drawCount=0;
+}
+function updateTemporalCacheConfig(f){
+  // p5 Images may keep both CPU pixels and canvas backing store. Conservatively
+  // account for both, and prevent a partially populated LRU that never warms.
+  const bytes=Math.max(1,f.cols*f.rows*8);
+  const budget=typeof navigator!=='undefined'&&/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)?48*1048576:176*1048576;
+  const bins=Math.min(192,Math.floor(budget/bytes));
+  const count=bins>=48?bins:0;
+  const mode=show_EField?'E':show_BField?'B':'S';
+  const key=[f.cacheSignature,fieldTiles.scene?.omega,mode,f.cols,f.rows,count].join(';');
+  if(temporalCache.key!==key){resetTemporalCache();temporalCache.key=key;temporalCache.count=count;temporalCache.frames=new Array(count);}
+  return count;
+}
+function paintFieldImage(f,ct,st,target) {
+    const fieldPixels = target.pixels;
     const oldCos=Math.cos(timeSim*2*Math.PI*f.previousFreq),oldSin=Math.sin(timeSim*2*Math.PI*f.previousFreq);
-    const ct = frameCos, st = frameSin;
+
     for (let j = 0; j < f.rows; j++) {
       for (let i = 0; i < f.cols; i++) {
         const idx = j * f.cols + i;
@@ -1434,14 +1588,61 @@ function renderFields() {
         fieldPixels[pixelIndex + 3] = 255;
       }
     }
-    fieldImage.updatePixels();
+    target.updatePixels();
+}
+function cachedHeatmap(f) {
+  if(!temporalCache.enabled){temporalCache.reason='Off';return null;}
+  if(waitProcess||fieldTiles.dirtyPhysics||fieldTiles.preview||fieldTiles.stalePixels||fieldTiles.missingPixels){
+    temporalCache.reason='Waiting for stable fields';return null;
+  }
+  const count=updateTemporalCacheConfig(f);
+  if(!count){temporalCache.reason='Viewport exceeds cache memory budget';return null;}
+  const theta=timeSim*fieldTiles.scene.omega;
+  const position=((theta/(2*Math.PI))%1+1)%1*count;
+  const lo=Math.floor(position),hi=(lo+1)%count,alpha=position-lo;
+  const wanted=alpha<.001?[lo]:[lo,hi];
+  const t0=performance.now();let rendered=0;
+  for(const i of wanted){
+    if(temporalCache.frames[i]){temporalCache.hits++;continue;}
+    const phase=2*Math.PI*i/count;
+    const bitmap=createImage(f.cols,f.rows);bitmap.loadPixels();
+    const began=performance.now();paintFieldImage(f,Math.cos(phase),Math.sin(phase),bitmap);
+    temporalCache.rasterMs+=performance.now()-began;temporalCache.rasterCount++;
+    temporalCache.frames[i]=bitmap;temporalCache.misses++;rendered++;
+  }
+  temporalCache.cacheMs+=performance.now()-t0;temporalCache.drawCount++;
+  temporalCache.reason='Active';
+  return [temporalCache.frames[lo],temporalCache.frames[hi],alpha];
+}
+
+function renderFields() {
+  if (simulate) {
+
+    updateFramePhase();
+    refreshVisibleFields();
+    const f = visibleFields;
+    const cached=cachedHeatmap(f);
+    if(!cached) {
+      const before=performance.now();
+      paintFieldImage(f,frameCos,frameSin,fieldImage);
+      temporalCache.rasterMs+=performance.now()-before;
+      temporalCache.rasterCount++;
+    }
+
     // Preserve exact cell size and clip partial edge cells rather than stretching.
     drawingContext.save();
     drawingContext.beginPath();
     drawingContext.rect(0, 0, width, height);
     drawingContext.clip();
     drawingContext.imageSmoothingEnabled = false;
-    image(fieldImage, f.drawX, f.drawY, f.cols * f.cell, f.rows * f.cell);
+    if(cached){
+      image(cached[0],f.drawX,f.drawY,f.cols*f.cell,f.rows*f.cell);
+      if(cached[2]>0.001){
+        drawingContext.globalAlpha=cached[2];
+        image(cached[1],f.drawX,f.drawY,f.cols*f.cell,f.rows*f.cell);
+        drawingContext.globalAlpha=1;
+      }
+    } else image(fieldImage, f.drawX, f.drawY, f.cols * f.cell, f.rows * f.cell);
     drawingContext.restore();
   }
 
@@ -1451,7 +1652,7 @@ function renderFields() {
   
   // Original field vectors and animated wire currents.
 
-  if (simulate) {
+  if (simulate && (show_EField || show_EnergyFlux)) {
     push();
     drawingContext.beginPath();
     drawingContext.rect(0, 0, width, height);
@@ -1462,6 +1663,9 @@ function renderFields() {
     const oldCos=Math.cos(timeSim*2*Math.PI*f.previousFreq),oldSin=Math.sin(timeSim*2*Math.PI*f.previousFreq);
     const ct = frameCos, st = frameSin;
     const vector = new Float64Array(3);
+    const ctx=drawingContext;
+    ctx.strokeStyle='#000';ctx.fillStyle='#000';ctx.lineWidth=1;
+    ctx.beginPath();
     for (let screenX = ARROW_SPACING_PX / 2; screenX < width; screenX += ARROW_SPACING_PX) {
       for (let screenY = ARROW_SPACING_PX / 2; screenY < height; screenY += ARROW_SPACING_PX) {
         if (!sampleArrowField(f, screenX, screenY, ct, st, oldCos, oldSin, vector)) continue;
@@ -1476,12 +1680,10 @@ function renderFields() {
             let dx = Ex_t * (arrow_l / E_mag);
             let dy = Ey_t * (arrow_l / E_mag);
 
-            stroke(0, 0, 0);
-            fill(0, 0, 0);
-
-            circle(screenX, screenY, 2);
-            line(screenX, screenY, screenX + dx, screenY - dy);
-            noStroke();
+            ctx.moveTo(screenX+1,screenY);
+            ctx.arc(screenX,screenY,1,0,2*Math.PI);
+            ctx.moveTo(screenX,screenY);
+            ctx.lineTo(screenX+dx,screenY-dy);
           }
         }
 
@@ -1498,17 +1700,15 @@ function renderFields() {
             dx *= arrow_l / E_flux_mag;
             dy *= arrow_l / E_flux_mag;
 
-            fill(0, 0, 0);
-            circle(screenX, screenY, 2);
-
-            stroke(0, 0, 0);
-            line(screenX, screenY, screenX + dx, screenY - dy);
-            noStroke();
+            ctx.moveTo(screenX+1,screenY);
+            ctx.arc(screenX,screenY,1,0,2*Math.PI);
+            ctx.moveTo(screenX,screenY);
+            ctx.lineTo(screenX+dx,screenY-dy);
           }
         }
       }
     }
-
+    ctx.stroke();ctx.fill();
     pop();
   }
 
@@ -1526,6 +1726,13 @@ let ui = {};
 
 // Descriptors own placement; the solver sees only complex current elements.
 const componentTypes = {
+  pecPlane: {
+    name:'Infinite PEC plane', description:'Two points define its trace · image method on both sides · one plane only',
+    firstHint:'Click the first point on the infinite PEC plane', secondHint:'Click another point to set its direction',
+    validate:(a,b)=>length2D(a,b)>.08&&!currentPECPlane()&&!planeGeometryError(new PECPlane(c/freq,a,b),antennas),
+    invalidHint:'Plane already present, too short, or intersects an existing component',
+    create:(a,b)=>configureSource(new PECPlane(c/freq,a,b),'pecPlane','PEC plane')
+  },
   passiveWire: {
     name:'Passive PEC wire', description:'Two endpoints · coupled induced currents',
     firstHint:'Click the first wire endpoint', secondHint:'Click the second wire endpoint',
@@ -1546,16 +1753,16 @@ const componentTypes = {
     invalidHint:'Choose a different point to set the direction',
     create:(a,b)=>configureSource(new HertzianDipole(c/freq,a,Math.atan2(b[1]-a[1],b[0]-a[0]),10,0),'hertzian','Hertzian')
   },
+  smallLoop: {
+    name:'Small circular loop', description:'Click a center · uniform circulating current', oneClick:true,
+    firstHint:'Click the loop center; adjust radius in Properties',
+    create:a=>configureSource(new SmallLoop(c/freq,a,.08*(c/freq)/(2*Math.PI),100*defAmp,0),'smallLoop','Loop')
+  },
   linearArray: {
     name:'Linear array', description:'Center + axis · dipoles or circular loops',
     firstHint:'Click the array center', secondHint:'Click to set the positive array axis',
     validate:(a,b)=>length2D(a,b)>.001, invalidHint:'Choose a different point to set the axis',
     create:(a,b)=>configureSource(new LinearArray(c/freq,a,Math.atan2(b[1]-a[1],b[0]-a[0])),'linearArray','Array')
-  },
-  smallLoop: {
-    name:'Small loop', description:'Click a center · uniform circulating current', oneClick:true,
-    firstHint:'Click the loop center; adjust radius in Properties',
-    create:a=>configureSource(new SmallLoop(c/freq,a,.08*(c/freq)/(2*Math.PI),100*defAmp,0),'smallLoop','Loop')
   }
 };
 function configureSource(source,type,name) {
@@ -1674,7 +1881,7 @@ html,body {margin:0!important;padding:0!important;width:100%;height:100%;overflo
 #em-app .workspace canvas:focus-visible {outline:1px solid var(--accent);outline-offset:-2px;}
 #em-app .canvas-tag {position:absolute;left:18px;top:15px;pointer-events:none;color:#c4d2dc;font-size:10px;text-transform:uppercase;letter-spacing:1.4px;background:#091019c9;padding:5px 8px;border-radius:4px;}
 #em-app .hint {position:absolute;bottom:16px;left:50%;transform:translateX(-50%);max-width:90%;padding:8px 13px;border:1px solid #334354;border-radius:8px;background:#111b27e8;color:#c2d0de;font-size:12px;text-align:center;pointer-events:none;}
-#em-app .palette {position:absolute;top:14px;left:14px;width:min(280px,calc(100% - 28px));z-index:2;background:#151e2a;border:1px solid #405368;border-radius:11px;padding:14px;box-shadow:0 12px 40px #0008;}
+#em-app .palette {position:absolute;top:14px;left:14px;width:min(280px,calc(100% - 28px));max-height:calc(100% - 28px);overflow-y:auto;overscroll-behavior:contain;z-index:2;background:#151e2a;border:1px solid #405368;border-radius:11px;padding:14px;box-shadow:0 12px 40px #0008;}
 #em-app .eyebrow {text-transform:uppercase;letter-spacing:1.5px;font-size:10px;font-weight:650;color:var(--muted);margin:0 0 12px;}
 #em-app .palette button {width:100%;text-align:left;padding:12px;white-space:normal;}
 #em-app .palette button + button {margin-top:8px;}
@@ -1726,6 +1933,7 @@ function mountInterface() {
       <label class="top-control">Frequency <input id="em-frequency" type="number" min="${minFreq}" max="${maxFreq}" step="0.01" value="${freq}" title="Simulation frequency"></label>
       <label class="top-control">Wave speed <input id="em-speed" type="number" min="${minSpeed}" max="${maxSpeed}" step="0.1" value="${c}" title="Simulation wave speed"></label>
       <label class="top-control">Quality <select id="em-quality"><option value="1">Low</option><option value="2" selected>Medium</option><option value="3">High</option></select></label>
+      <label class="top-control" title="Cache phase-indexed field heatmaps; arrows and currents remain continuous"><input id="em-temporal" type="checkbox" checked> Temporal cache</label>
     </header>
     <div class="body">
       <nav class="tools" aria-label="Workspace tools">
@@ -1747,11 +1955,12 @@ function mountInterface() {
         <div class="section muted">Wheel to zoom · 0 to reset<br>V select · H pan · A add<br>Esc cancel · Delete selected<br><br><br><br><span style="color:#ffff00">› Yellow wire chevrons: current I(t)</span><br>Direction reverses with the instantaneous conventional current.</div>
       </aside>
     </div>
-    <footer class="footer"><span class="status" role="status" id="em-status"></span><span id="em-grid"></span><span id="em-wavelength"></span><div class="zoom-controls"><button id="em-zoom-out" aria-label="Zoom out">−</button><button id="em-zoom-reset" title="Reset zoom (0)">100%</button><button id="em-zoom-in" aria-label="Zoom in">+</button></div></footer>`;
+    <footer class="footer"><span class="status" role="status" id="em-status"></span><span id="em-grid"></span><span id="em-wavelength"></span><span id="em-fps">FPS —</span><span id="em-temporal-stats" title="Compare with Temporal cache unchecked"></span><div class="zoom-controls"><button id="em-zoom-out" aria-label="Zoom out">−</button><button id="em-zoom-reset" title="Reset zoom (0)">100%</button><button id="em-zoom-in" aria-label="Zoom in">+</button></div></footer>`;
   document.body.appendChild(root);
   ui.root = root;
   const find = id => root.querySelector(`#em-${id}`);
   for (const id of ['workspace','properties','scene','palette','hint','status','count','grid','wavelength']) ui[id] = find(id);
+  ui.fps = find('fps');
   ui.play = find('play');
   ui.select = find('select'); ui.pan = find('pan'); ui.add = find('add');
   ui.select.onclick = () => setTool('select');
@@ -1787,6 +1996,7 @@ function mountInterface() {
   }
   bindNumber('frequency', () => freq, v => { freq = v; });
   bindNumber('speed', () => c, v => { c = v; });
+  find('temporal').onchange=e=>{temporalCache.enabled=e.target.checked;resetTemporalCache();};
   find('quality').onchange = e => {
     resolution = +e.target.value;
     sLength = resolution === 3 ? 2 : resolution === 2 ? 4 : 5;
@@ -1988,9 +2198,14 @@ function bindCanvasEvents() {
     if (activeTool==='add') {
       const world=[conMyX(point[0]),conMyY(point[1])];
       const descriptor=componentTypes[placementType];
+      if (!descriptor){updateHint('Choose a component from the Add palette');return;}
       if (!descriptor.oneClick && !placementStart) { placementStart=world; updateHint(); return; }
       if (!descriptor.oneClick && !descriptor.validate(placementStart,world)) { updateHint(descriptor.invalidHint); return; }
+      if(!descriptor){updateHint('Choose a component from the Add palette');return;}
+      if(placementType==='pecPlane'&&currentPECPlane()){updateHint('Only one PEC plane is allowed. Delete the existing plane first.');return;}
       const a=descriptor.oneClick?descriptor.create(world):descriptor.create(placementStart,world);
+      const error=planeGeometryError(currentPECPlane()||(a instanceof PECPlane?a:null),[...antennas,a]);
+      if(error){updateHint(error+' · choose a different location');return;}
       antennas.push(a); requestFieldUpdate(); setTool('select'); selectComponent(a);
     } else selectComponent(hitComponent(point));
   });
@@ -2049,7 +2264,7 @@ function draw() {
 }
 function screenPoint(p) { return [conScreenX(p[0]),conScreenY(p[1])]; }
 function currentColor(source,index) {
-  if(!simulate) return [200,213,226];
+  if(!simulate || source instanceof PECPlane) return [200,213,226];
   const j=(source.displayCurrents||source.currentSegments)[index], drive=source.I0;
   const re=drive.a*frameCos-drive.b*frameSin, im=drive.a*frameSin+drive.b*frameCos;
   const magnitude=Math.hypot(j[0]*re-j[2]*im,j[1]*re-j[3]*im);
@@ -2059,6 +2274,121 @@ function currentColor(source,index) {
 }
 // Current markers use a separate wire-bound visual language from field vectors.
 const CURRENT_CHEVRON_SPACING = 32; // screen pixels, independent of quality/zoom
+const PEC_SURFACE_SPACING = 40;
+const PEC_SURFACE_OFFSET = 0.002; // sample just off each side of the mathematical plane
+const pecSurfaceCache = {epoch:-1,stamp:'',samples:[],peak:0};
+
+function clipLineToRect(x1,y1,x2,y2,xmin=0,ymin=0,xmax=width,ymax=height){
+  let u1=0,u2=1,dx=x2-x1,dy=y2-y1;
+  const tests=[[-dx,x1-xmin],[dx,xmax-x1],[-dy,y1-ymin],[dy,ymax-y1]];
+  for(const [p,q] of tests){
+    if(Math.abs(p)<1e-12){ if(q<0) return null; continue; }
+    const r=q/p;
+    if(p<0){ if(r>u2) return null; if(r>u1) u1=r; }
+    else { if(r<u1) return null; if(r<u2) u2=r; }
+  }
+  return [x1+u1*dx,y1+u1*dy,x1+u2*dx,y1+u2*dy];
+}
+// Clip the infinite PEC trace to the viewport. Project the VIEWPORT CENTER onto
+// the line first: endpoints around the original placement point may be entirely
+// off-screen after large pan/zoom, even while the true infinite line is visible.
+function planeScreenTrace(plane,margin=16){
+  if(!plane)return null;
+  const p=screenPoint(plane.endPointA);
+  const dx=plane.tangent[0],dy=-plane.tangent[1]; // world y points up
+  const along=(width/2-p[0])*dx+(height/2-p[1])*dy;
+  const cx=p[0]+along*dx,cy=p[1]+along*dy;
+  const reach=2*Math.hypot(width,height)+2*margin;
+  return clipLineToRect(cx-reach*dx,cy-reach*dy,cx+reach*dx,cy+reach*dy,
+                        -margin,-margin,width+margin,height+margin);
+}
+function evalPlaneSideB(scene,side,x,y){
+  const e=scene?.elements; if(!e||!e.length) return [0,0];
+  let br=0,bi=0;
+  for(let n=0;n<e.length;n+=8){
+    if(side!==e[n+7]) continue;
+    const dx=x-e[n],dy=y-e[n+1],R=Math.hypot(dx,dy,e[n+6]),inv=1/R,kr=scene.k*R;
+    const gr=Math.cos(kr)*inv,gi=-Math.sin(kr)*inv;
+    const hr=-gr*inv*inv+scene.k*gi*inv,hi=-gi*inv*inv-scene.k*gr*inv;
+    const crossr=dx*e[n+3]-dy*e[n+2],crossi=dx*e[n+5]-dy*e[n+4];
+    br+=hr*crossr-hi*crossi; bi+=hr*crossi+hi*crossr;
+  }
+  return [br,bi];
+}
+function getPECSurfaceSamples(plane){
+  const scene=fieldTiles.scene;
+  if(!plane||!scene||!simulate) return [];
+  const clipped=planeScreenTrace(plane,4);
+  if(!clipped) return [];
+  const stamp=[scene.epoch,width,height,orig[0].toFixed(2),orig[1].toFixed(2),zoom.toFixed(4),clipped.map(v=>v.toFixed(2)).join(',')].join('|');
+  if(pecSurfaceCache.epoch===scene.epoch && pecSurfaceCache.stamp===stamp) return pecSurfaceCache.samples;
+  const [x1,y1,x2,y2]=clipped,dx=x2-x1,dy=y2-y1,total=Math.hypot(dx,dy);
+  const count=Math.max(1,Math.floor(total/PEC_SURFACE_SPACING));
+  const n=plane.normal,tan=plane.tangent,eps=PEC_SURFACE_OFFSET;
+  const samples=[]; let peak=0;
+  for(let i=0;i<count;i++){
+    const u=(i+0.5)/count,sx=x1+u*dx,sy=y1+u*dy,wx=(sx-orig[0])/(Scale*zoom),wy=(orig[1]-sy)/(Scale*zoom);
+    const plus=evalPlaneSideB(scene,1,wx+eps*n[0],wy+eps*n[1]);
+    const minus=evalPlaneSideB(scene,-1,wx-eps*n[0],wy-eps*n[1]);
+    const kr=plus[0]-minus[0],ki=plus[1]-minus[1],amp=Math.hypot(kr,ki);
+    peak=Math.max(peak,amp);
+    samples.push({sx,sy,wx,wy,kr,ki,amp,tx:tan[0],ty:-tan[1]});
+  }
+  pecSurfaceCache.epoch=scene.epoch; pecSurfaceCache.stamp=stamp; pecSurfaceCache.samples=samples; pecSurfaceCache.peak=peak;
+  return samples;
+}
+function drawPECSurfaceCurrentDensity(plane){
+  if(!simulate||!fieldTiles.scene) return;
+  const samples=getPECSurfaceSamples(plane); if(!samples.length) return;
+  const ctx=drawingContext;
+  ctx.save(); ctx.lineCap='round';ctx.lineJoin='round';
+  ctx.beginPath(); ctx.rect(0,0,width,height); ctx.clip();
+  for(const s of samples){
+    const inst=s.kr*frameCos-s.ki*frameSin;
+    if(!(s.amp>0)||!Number.isFinite(inst))continue;
+    const mag=Math.abs(inst),rel=mag/s.amp;
+    const v=Math.max(0,Math.min(1,(rel-0.025)/0.18));
+    if(v<=0)continue;
+    const fade=v*v*(3-2*v);
+    const dir=inst>=0?1:-1;
+    const ux=dir*s.tx,uy=dir*s.ty;
+    const nx=-uy,ny=ux;
+    // Larger *filled* arrowheads and an orange-to-yellow magnitude ramp make
+    // the instantaneous sign and amplitude visible against the silver trace.
+    const strength=Math.pow(squiz(mag,0.24),0.5);
+    const length=20+12*strength;
+    const head=10+2*strength;
+    const wing=5.7;
+    const half=length/2;
+    const tx=s.sx-half*ux,ty=s.sy-half*uy;
+    const ex=s.sx+half*ux,ey=s.sy+half*uy;
+    const baseX=ex-head*ux,baseY=ey-head*uy;
+    const r=Math.round(246+9*strength);
+    const g=Math.round(148+86*strength);
+    const b=Math.round(24+23*strength);
+    const alpha=.22+.78*fade;
+    // A subtle dark silhouette separates the current marker from the plane.
+    ctx.globalAlpha=alpha;
+    ctx.strokeStyle='rgba(40,23,4,0.97)'; ctx.lineWidth=6;
+    ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(baseX,baseY);ctx.stroke();
+    ctx.fillStyle='rgba(40,23,4,0.97)';
+    ctx.beginPath();ctx.moveTo(ex+1.5*ux,ey+1.5*uy);
+    ctx.lineTo(baseX+1.5*nx*wing,baseY+1.5*ny*wing);
+    ctx.lineTo(baseX-1.5*nx*wing,baseY-1.5*ny*wing);
+    ctx.closePath();ctx.fill();
+    ctx.strokeStyle=`rgb(${r},${g},${b})`;ctx.lineWidth=3.3;
+    ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(baseX,baseY);ctx.stroke();
+    ctx.fillStyle=`rgb(${r},${g},${b})`;
+    ctx.beginPath();ctx.moveTo(ex,ey);
+    ctx.lineTo(baseX+wing*nx,baseY+wing*ny);
+    ctx.lineTo(baseX-wing*nx,baseY-wing*ny);
+    ctx.closePath();ctx.fill();
+    ctx.globalAlpha=alpha*.85;
+    ctx.strokeStyle='rgba(255,242,157,0.95)';ctx.lineWidth=1.1;
+    ctx.beginPath();ctx.moveTo(tx,ty);ctx.lineTo(baseX,baseY);ctx.stroke();
+  }
+  ctx.restore();
+}
 function drawCurrentChevrons(source,edges) {
   if(!simulate)return;
   const drive=source.I0,re=drive.a*frameCos-drive.b*frameSin,
@@ -2109,6 +2439,23 @@ function drawCurrentChevrons(source,edges) {
 function drawComponentOverlay() {
   push();
   for(const a of antennas) {
+    if(a instanceof PECPlane){
+      // Draw the infinite plane as one uninterrupted silver conductor trace.
+      // Its ends are defined only by the viewport; the two placement points
+      // remain selectable via the standard endpoint handles below.
+      const trace=planeScreenTrace(a,16);
+      if(trace){
+        const [x1,y1,x2,y2]=trace,ctx=drawingContext;
+        ctx.save();ctx.lineCap='round';ctx.setLineDash([]);
+        ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);
+        ctx.strokeStyle='#353e4b';ctx.lineWidth=14;ctx.stroke();
+        ctx.strokeStyle='#a7b1be';ctx.lineWidth=10;ctx.stroke();
+        ctx.strokeStyle='#d7dfe8';ctx.lineWidth=4;ctx.stroke();
+        ctx.restore();
+        drawPECSurfaceCurrentDensity(a);
+      }
+      continue;
+    }
     const edges=a.getDisplayEdges();
     for(const edge of edges) {
       if(length2D(edge.a,edge.b)>1e-10) thickLine(edge.a,edge.b,edge.width,currentColor(a,edge.current));
@@ -2135,12 +2482,22 @@ function drawComponentOverlay() {
   }
   pop();
 }
+let fpsLabelUpdate=0;
 function updateStatus() {
-  const state=fieldTiles.dirtyPhysics?'Updating setup…':waitProcess?'Refining fields '+Math.round(fieldTiles.progress*100)+'%'+(fieldTiles.stalePixels?' · previous setup visible':''):pause?'Paused':'Running';
-  const status=`${state} · ${antennas.length} components${antennas.some(a=>a instanceof PassiveWire)?' · PEC: '+passiveSolveInfo.message:''}`;
+  // Update the readout twice per second instead of causing DOM churn at 60 FPS.
+  if(performance.now()-fpsLabelUpdate>500){
+    fpsLabelUpdate=performance.now();
+    ui.fps.textContent='FPS '+Math.round(1000/fieldTiles.frameMs);
+  }
+  const state=fieldTiles.dirtyPhysics?'Updating setup…':passiveSolveInfo.error&&!simulate?'Invalid geometry':waitProcess?'Refining fields '+Math.round(fieldTiles.progress*100)+'%'+(fieldTiles.stalePixels?' · previous setup visible':''):pause?'Paused':'Running';
+  const status=`${state} · ${antennas.length} components${antennas.some(a=>a instanceof PassiveWire)?' · MoM: '+passiveSolveInfo.message:''}${currentPECPlane()?' · PEC plane':''}${passiveSolveInfo.error&&!antennas.some(a=>a instanceof PassiveWire)?' · '+passiveSolveInfo.message:''}`;
   if(ui.status.dataset.text!==status) { ui.status.textContent=status; ui.status.dataset.text=status; }
   ui.grid.textContent=`Grid ${(sLength/Scale*2**fieldCameraLevel()).toFixed(2)}${fieldTiles.preview?' · preview':''}`;
   ui.wavelength.textContent=`λ ${(c/freq).toFixed(2)}`;
+  const total=temporalCache.hits+temporalCache.misses;
+  ui.root.querySelector('#em-temporal-stats').textContent=temporalCache.enabled
+    ?`Time cache: ${temporalCache.reason}${total?' · '+Math.round(100*temporalCache.hits/total)+'% hits':''}${temporalCache.count?' · '+temporalCache.frames.filter(Boolean).length+'/'+temporalCache.count+' phases':''}`
+    :'Time cache: off';
   ui.root.querySelector('#em-zoom-reset').textContent=`${Math.round(zoom*100)}%`;
 }
 
