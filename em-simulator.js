@@ -999,7 +999,7 @@ let show_BField = false;
 let show_EField = true;
 let show_EnergyFlux = false;
 
-const minFreq = 0.001;
+const minFreq = 0.01;
 const maxFreq = 1;
 let freq = 0.5 * (minFreq + maxFreq);
 
