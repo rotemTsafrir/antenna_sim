@@ -1726,6 +1726,19 @@ let ui = {};
 
 // Descriptors own placement; the solver sees only complex current elements.
 const componentTypes = {
+
+  hertzian: {
+    name:'Hertzian dipole', description:'Position + direction · ideal current element',
+    firstHint:'Click the source position', secondHint:'Click to set direction (symbol length is not physical)',
+    validate:(a,b)=>length2D(a,b)>.001,
+    invalidHint:'Choose a different point to set the direction',
+    create:(a,b)=>configureSource(new HertzianDipole(c/freq,a,Math.atan2(b[1]-a[1],b[0]-a[0]),10,0),'hertzian','Hertzian')
+  },
+  smallLoop: {
+    name:'Small circular loop', description:'Click a center · uniform circulating current', oneClick:true,
+    firstHint:'Click the loop center; adjust radius in Properties',
+    create:a=>configureSource(new SmallLoop(c/freq,a,.08*(c/freq)/(2*Math.PI),100*defAmp,0),'smallLoop','Loop')
+  },
   pecPlane: {
     name:'Infinite PEC plane', description:'Two points define its trace · image method on both sides · one plane only',
     firstHint:'Click the first point on the infinite PEC plane', secondHint:'Click another point to set its direction',
@@ -1746,18 +1759,7 @@ const componentTypes = {
     invalidHint:'Choose a second endpoint farther than the feed gap',
     create:(a,b)=>configureSource(new Dipole(c/freq,a,b,defAmp,0,thickDipole/Scale),'dipole','Dipole')
   },
-  hertzian: {
-    name:'Hertzian dipole', description:'Position + direction · ideal current element',
-    firstHint:'Click the source position', secondHint:'Click to set direction (symbol length is not physical)',
-    validate:(a,b)=>length2D(a,b)>.001,
-    invalidHint:'Choose a different point to set the direction',
-    create:(a,b)=>configureSource(new HertzianDipole(c/freq,a,Math.atan2(b[1]-a[1],b[0]-a[0]),10,0),'hertzian','Hertzian')
-  },
-  smallLoop: {
-    name:'Small circular loop', description:'Click a center · uniform circulating current', oneClick:true,
-    firstHint:'Click the loop center; adjust radius in Properties',
-    create:a=>configureSource(new SmallLoop(c/freq,a,.08*(c/freq)/(2*Math.PI),100*defAmp,0),'smallLoop','Loop')
-  },
+  
   linearArray: {
     name:'Linear array', description:'Center + axis · dipoles or circular loops',
     firstHint:'Click the array center', secondHint:'Click to set the positive array axis',
