@@ -11,21 +11,16 @@ The simulator is an educational visualization tool. It displays a planar slice o
 
 ## Features
 
-- Center-fed dipoles with prescribed sinusoidal current distributions.
 - Hertzian dipoles with adjustable current moment, phase, and orientation.
 - Circular loops with prescribed uniform circulating current.
+- Center-fed dipoles with prescribed sinusoidal current distributions.
+-  Passive thin PEC wires with induced currents solved in one globally coupled system.
+-  Passive PEC plane perpendicular to the simulation plane.
 - Linear arrays of Hertzian dipoles or circular loops.
-- Passive thin PEC wires with induced currents solved in one globally coupled system.
 - Animated electric-field, magnetic-field, and energy-flux-proxy views.
 - Current visualization, component properties, a scene list, pan and zoom, and adjustable display quality.
 
 ## Components
-
-### Center-fed dipole
-
-A finite straight-wire dipole with an assumed sinusoidal current distribution. Place it by choosing two endpoints, then adjust the current amplitude, excitation phase, and feed gap.
-
-The inspector shows its electrical length relative to the wavelength. Its current distribution is prescribed: nearby passive wires scatter its field but do not modify the driven dipole's assumed current.
 
 ### Hertzian dipole
 
@@ -42,6 +37,12 @@ m = I A = I\pi a^2
 $$
 
 Here, $a$ is the loop radius. At fixed current, reducing the radius also reduces the magnetic moment. The model is intended for electrically small loops; the interface warns when the circumference becomes too large relative to the wavelength.
+
+### Center-fed dipole
+
+A finite straight-wire dipole with an assumed sinusoidal current distribution. Place it by choosing two endpoints, then adjust the current amplitude, excitation phase, and feed gap.
+
+The inspector shows its electrical length relative to the wavelength. Its current distribution is prescribed: nearby passive wires scatter its field but do not modify the driven dipole's assumed current.
 
 ### Linear antenna array
 
@@ -90,7 +91,7 @@ $$
 \mathbf S \propto \mathbf E \times \mathbf B
 $$
 
-Colors, brightness, and arrow lengths use nonlinear display scaling. The energy-flux heatmap is a visual proxy, not a calibrated power-density measurement or a time-averaged radiation pattern.
+Colors, brightness, and arrow lengths use nonlinear display scaling.
 
 ## Using the workspace
 
