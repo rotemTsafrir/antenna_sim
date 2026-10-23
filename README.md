@@ -191,8 +191,8 @@ The current passive solver allows up to **320 complex unknowns** and **6000 inte
 - **Mesh sensitivity:** inspect results as mesh length changes. Excessively fine intervals relative to the wire radius can produce unstable or sensitive current profiles; finer is not always better.
 - **Small-loop assumption:** loop current is uniform and prescribed, including when the loop becomes electrically large and that approximation is no longer reliable.
 - **Near-source smoothing:** fields very close to sources or wires should be interpreted qualitatively.
-- **Normalized units:** displayed amplitudes and energy-flux colors are not calibrated SI measurements. Feed impedance, matching, and input power are not calculated.
-- **Planar visualization:** the screen shows a slice through 3D fields, not a genuinely two-dimensional propagation model or a full 3D viewer.
+- **Normalized units:** displayed amplitudes and energy-flux colors are not calibrated SI measurements. Feed impedance, matching, and input power are not calculated yet.
+- **Planar visualization:** the screen shows a slice through 3D fields, not a full 3D viewer.
 
 The passive-wire calculation is a simplified method-of-moments model. The simulator is intended for exploration and intuition, rather than validated engineering design.
 
