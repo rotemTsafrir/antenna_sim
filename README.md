@@ -83,7 +83,7 @@ The geometry lies in the XY plane. The displayed electric field has in-plane com
 | --- | --- |
 | Electric field | Instantaneous field strength and local direction arrows. |
 | Magnetic field | Perpendicular magnetic field, with red and blue indicating opposite directions. |
-| Energy flux proxy | A qualitative energy-flow visualization with arrows directed along the instantaneous cross product of the electric and magnetic fields. |
+| Energy flux | A qualitative energy-flow visualization with arrows directed along the instantaneous cross product of the electric and magnetic fields. |
 
 The energy-flow direction is based on:
 
