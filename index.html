@@ -50,30 +50,23 @@
       #site-introduction a { color: #77e2c3; }
       #site-introduction p { margin: 0 0 12px; }
       #site-introduction ul { margin: 8px 0 15px; padding-left: 20px; }
-      /* When p5 mounts the full-screen UI, move the same content into a footer
-         disclosure. It stays available to visitors without covering the canvas. */
-      #em-app #antennasim-about { position: relative; flex-shrink: 0; }
-      #em-app #antennasim-about > summary {
-        list-style: none;
-        cursor: pointer;
-        white-space: nowrap;
+      /* The dialog uses the browser top layer, outside footer clipping and
+         simulator panel stacking. Its content remains readable before startup. */
+      #em-app #antennasim-about {
+        flex-shrink: 0;
         color: #77e2c3;
         font-size: 11px;
         border: 1px solid #405368;
         border-radius: 6px;
         padding: 5px 9px;
       }
-      #em-app #antennasim-about > summary::-webkit-details-marker { display:none; }
-      #em-app #antennasim-about > summary:focus-visible { outline: 2px solid #77e2c3; outline-offset: 2px; }
-      #em-app #site-introduction {
+      #em-app #antennasim-about-dialog {
         box-sizing: border-box;
-        position: absolute;
-        right: 0;
-        bottom: calc(100% + 10px);
-        z-index: 100;
-        width: min(440px, calc(100vw - 24px));
-        max-height: min(65vh, 580px);
+        width: min(480px, calc(100vw - 24px));
+        max-height: calc(100vh - 24px);
+        max-height: calc(100dvh - 24px);
         overflow: auto;
+        overscroll-behavior: contain;
         padding: 18px 20px;
         color: #d5e0e9;
         background: #121923;
@@ -83,6 +76,10 @@
         font-size: 13px;
         line-height: 1.6;
       }
+      #antennasim-about-dialog::backdrop { background: #0009; }
+      #em-app .about-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+      #em-app .about-dialog-header h2 { margin: 0; }
+      #em-app #site-introduction { position: static; padding: 0; }
       #em-app #site-introduction h1 { font-size: 18px; margin: 0 0 12px; }
       #em-app #site-introduction a { color: #77e2c3; }
       #em-app #site-introduction ul { padding-left: 18px; }
@@ -105,7 +102,7 @@
         if (status) status.textContent = 'Could not start EM Simulator: ' + (event.message || 'a required file failed to load.');
       });
     </script>
-    <script src="em-simulator.js?v=20261010-4" onerror="document.getElementById('startup-status').textContent='Could not load em-simulator.js. Extract both files into the same folder.'"></script>
+    <script src="em-simulator.js?v=20261024-about-fix" onerror="document.getElementById('startup-status').textContent='Could not load em-simulator.js. Extract both files into the same folder.'"></script>
     <script>
       (function () {
         var status = document.getElementById('startup-status');
@@ -117,18 +114,38 @@
           var simulatorSetup = window.setup;
           window.setup = function () {
             simulatorSetup();
-            // Keep the static introduction available in the simulator's footer.
-            // It is visible while loading and inside the disclosure afterwards.
+            // Keep the trigger in the footer, but mount the dialog at app level.
+            // A modal dialog renders in the top layer, unaffected by overflow:auto.
             var footer = document.querySelector('#em-app .footer');
             var introduction = document.getElementById('site-introduction');
             if (footer && introduction) {
-              var disclosure = document.createElement('details');
-              disclosure.id = 'antennasim-about';
-              var summary = document.createElement('summary');
-              summary.textContent = 'About & guide';
-              disclosure.appendChild(summary);
-              disclosure.appendChild(introduction);
-              footer.appendChild(disclosure);
+              var trigger = document.createElement('button');
+              trigger.id = 'antennasim-about';
+              trigger.type = 'button';
+              trigger.textContent = 'About & guide';
+              trigger.setAttribute('aria-haspopup', 'dialog');
+              trigger.setAttribute('aria-controls', 'antennasim-about-dialog');
+              var dialog = document.createElement('dialog');
+              dialog.id = 'antennasim-about-dialog';
+              dialog.setAttribute('aria-labelledby', 'antennasim-about-title');
+              var header = document.createElement('div');
+              header.className = 'about-dialog-header';
+              var title = document.createElement('h2');
+              title.id = 'antennasim-about-title';
+              title.textContent = 'About & guide';
+              var close = document.createElement('button');
+              close.type = 'button';
+              close.textContent = 'Close';
+              close.setAttribute('aria-label', 'Close About and guide');
+              header.append(title, close);
+              dialog.append(header, introduction);
+              document.getElementById('em-app').appendChild(dialog);
+              footer.appendChild(trigger);
+              trigger.addEventListener('click', function () { if (!dialog.open) dialog.showModal(); });
+              close.addEventListener('click', function () { dialog.close(); });
+              dialog.addEventListener('close', function () { trigger.focus(); });
+              // Do not let simulator shortcuts act on the scene while reading help.
+              dialog.addEventListener('keydown', function (event) { event.stopPropagation(); });
             }
             if (status) status.remove();
           };
