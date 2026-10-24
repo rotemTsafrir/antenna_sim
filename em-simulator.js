@@ -932,7 +932,7 @@ function gridView() {
 
 function setViewZoom(value, screenX, screenY) {
   const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
-  if (!Number.isFinite(next) || next === zoom || placementStart) return;
+  if (!Number.isFinite(next) || next === zoom) return;
   // Preserve the exact world coordinate beneath the cursor (without snapping).
   const ratio = next / zoom;
   orig[0] = screenX - (screenX - orig[0]) * ratio;
@@ -998,6 +998,11 @@ let pause = false;
 let show_BField = false;
 let show_EField = true;
 let show_EnergyFlux = false;
+let show_EnergyDensity = false;
+const displayGamma = {heatmap:1, arrows:1, current:0.35};
+function heatTransfer(value, scale) { return Math.pow(squiz(value,scale),displayGamma.heatmap); }
+// In the solver's normalized units mu=1 and epsilon=1/c^2.
+function energyDensity(ex,ey,b) { return 0.5*((ex*ex+ey*ey)/(c*c)+b*b); }
 
 const minFreq = 0.01;
 const maxFreq = 1;
@@ -1460,8 +1465,8 @@ function updateTemporalCacheConfig(f){
   const budget=typeof navigator!=='undefined'&&/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)?48*1048576:176*1048576;
   const bins=Math.min(192,Math.floor(budget/bytes));
   const count=bins>=48?bins:0;
-  const mode=show_EField?'E':show_BField?'B':'S';
-  const key=[f.cacheSignature,fieldTiles.scene?.omega,mode,f.cols,f.rows,count].join(';');
+  const mode=show_EField?'E':show_BField?'B':show_EnergyDensity?'U':'S';
+  const key=[f.cacheSignature,fieldTiles.scene?.omega,mode,displayGamma.heatmap,f.cols,f.rows,count].join(';');
   if(temporalCache.key!==key){resetTemporalCache();temporalCache.key=key;temporalCache.count=count;temporalCache.frames=new Array(count);}
   return count;
 }
@@ -1481,18 +1486,18 @@ function paintFieldImage(f,ct,st,target) {
         let r, g, b, a;
 
         if (show_BField) {
-          let colorSizeB_Blue = 255 * squiz(-B_t * Math.abs(B_t), k1, 256);
-          let colorSizeB_Red = 255 * squiz(B_t * Math.abs(B_t), k1, 256);
-          let colorSizeMag = squiz(Math.abs(B_t), k1B, 256);
+          let colorSizeB_Blue = 255 * heatTransfer(-B_t * Math.abs(B_t), k1, 256);
+          let colorSizeB_Red = 255 * heatTransfer(B_t * Math.abs(B_t), k1, 256);
+          let colorSizeMag = heatTransfer(Math.abs(B_t), k1B, 256);
 
           r = Math.round(colorSizeB_Red);
           g = 0;
           b = Math.round(colorSizeB_Blue);
           a = colorSizeMag;
-        } else if (show_EField) {
-          let E_mag_2 = Ex_t * Ex_t + Ey_t * Ey_t;
-          let colorSizeEA = squiz(E_mag_2, k3, 256);
-          let colorSizeEB = 255 * squiz(E_mag_2, k4, 256);
+        } else if (show_EField || show_EnergyDensity) {
+          let E_mag_2 = show_EnergyDensity ? energyDensity(Ex_t,Ey_t,B_t) : Ex_t * Ex_t + Ey_t * Ey_t;
+          let colorSizeEA = heatTransfer(E_mag_2, k3, 256);
+          let colorSizeEB = 255 * heatTransfer(E_mag_2, k4, 256);
 
           // Convert HSB to RGB
           let hue = (255 - colorSizeEB) / 500;
@@ -1536,8 +1541,8 @@ function paintFieldImage(f,ct,st,target) {
           a = colorSizeEA;
         } else if (show_EnergyFlux) {
           let Energy_flux_mag = Math.sqrt(Ex_t * Ex_t + Ey_t * Ey_t)*Math.abs(B_t);
-          let colorSizeEnergyA = squiz(Energy_flux_mag, k5, 256);
-          let colorSizeEnergyB = 255 * squiz(Energy_flux_mag, k6, 256);
+          let colorSizeEnergyA = heatTransfer(Energy_flux_mag, k5, 256);
+          let colorSizeEnergyB = 255 * heatTransfer(Energy_flux_mag, k6, 256);
 
           let hue = (255 - colorSizeEnergyB) / 500;
           let sat = 1.0;
@@ -1675,7 +1680,7 @@ function renderFields() {
         if (show_EField) {
           let E_mag = Math.sqrt(Ex_t * Ex_t + Ey_t * Ey_t);
           if (E_mag > 1e-8) {
-            let arrow_l = maxArrowLen * squiz(E_mag, k2, 256);
+            let arrow_l = maxArrowLen * Math.pow(squiz(E_mag, k2),displayGamma.arrows);
 
             let dx = Ex_t * (arrow_l / E_mag);
             let dy = Ey_t * (arrow_l / E_mag);
@@ -1691,7 +1696,7 @@ function renderFields() {
         if (show_EnergyFlux) {
           let E_flux_mag = Math.sqrt(Ex_t * Ex_t + Ey_t * Ey_t) * Math.abs(B_t);
           if (E_flux_mag > 1e-8) {
-            let arrow_l = maxArrowLen * squiz(E_flux_mag, k7, 256);
+            let arrow_l = maxArrowLen * Math.pow(squiz(E_flux_mag, k7),displayGamma.arrows);
 
             // Poynting vector direction (S ~ E × B)
             let dx = Ey_t * B_t;
@@ -1911,10 +1916,35 @@ html,body {margin:0!important;padding:0!important;width:100%;height:100%;overflo
 #em-app .empty {padding:18px 0;line-height:1.7;color:var(--muted);}
 @media(max-width:1000px) {#em-app .topbar {gap:8px;padding:9px 12px;}#em-app .body {grid-template-columns:58px minmax(0,1fr) 240px;}#em-app .brand {min-width:145px;}#em-app .brand strong{font-size:14px;}#em-app .top-control{font-size:11px;}}
 @media(max-width:680px) {#em-app .body{grid-template-columns:52px minmax(0,1fr);grid-template-rows:minmax(180px,1fr) minmax(120px,34%);}#em-app .tools{grid-row:1 / 3;padding:10px 4px;}#em-app .inspector{grid-column:2;grid-row:2;border-left:0;border-top:1px solid var(--line);padding:14px;}#em-app .topbar{gap:7px;}#em-app .brand{min-width:135px;}#em-app .brand small{display:none;}#em-app .top-control input{width:65px;}#em-app .top-control select{max-width:125px;}#em-app .footer{padding:6px 10px;gap:6px 10px;}#em-app .hint{font-size:11px;bottom:9px;}#em-app .property{margin-bottom:12px;}}
+#em-app .floating-panel {position:absolute;z-index:5;right:16px;top:72px;width:min(360px,calc(100% - 24px));max-height:calc(100% - 90px);overflow:auto;padding:16px;border:1px solid #405368;border-radius:12px;background:#121923f5;box-shadow:0 12px 40px #0009;}
+#em-app .panel-heading {display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;}
+#em-app .radiation-panel {width:min(470px,calc(100% - 24px));}
+#em-app #em-radiation-canvas {display:block;width:100%;height:auto;aspect-ratio:1;max-height:58dvh;}
+#em-app .tools {overflow-y:auto;min-height:0;}
+@media (pointer:coarse), (max-width:680px) {
+ #em-app {height:100dvh;bottom:auto;}
+ #em-app .topbar {max-height:28dvh;overflow:auto;overscroll-behavior:contain;}
+ #em-app .top-control input[type=checkbox] {width:auto;}
+ #em-app input[type=number],#em-app select {font-size:16px;}
+ #em-app .footer {max-height:16dvh;overflow:auto;}
+ #em-app .floating-panel {top:8px;right:8px;max-height:calc(100% - 16px);}
+ #em-app .body {grid-template-columns:52px minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(0,30%);}
+ #em-app .tools {grid-row:1 / 3;padding:8px 4px;}
+ #em-app .inspector {grid-column:2;grid-row:2;border-left:0;border-top:1px solid var(--line);padding:12px;}
+}
+@media (pointer:coarse) and (orientation:landscape) {
+ #em-app .topbar {max-height:24dvh;}
+ #em-app .body {grid-template-columns:52px minmax(0,1fr) 220px;grid-template-rows:minmax(0,1fr);}
+ #em-app .tools {grid-row:1;}
+ #em-app .inspector {grid-column:3;grid-row:1;border-top:0;border-left:1px solid var(--line);}
+ #em-app .footer {max-height:14dvh;}
+}
+
 `;
 
 function icon(paths) { return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`; }
 function mountInterface() {
+  if(!document.querySelector('meta[name=viewport]')){const viewport=document.createElement('meta');viewport.name='viewport';viewport.content='width=device-width, initial-scale=1';document.head.appendChild(viewport);}
   const style = document.createElement('style');
   style.textContent = interfaceCSS;
   document.head.appendChild(style);
@@ -1931,11 +1961,13 @@ function mountInterface() {
         <option value="yagi">Yagi–Uda antenna</option>        
         <option value="quadrupole">Electric quadrupole (2 dipoles)</option>
       </select></label>
-      <label class="top-control">Field <select id="em-field"><option value="E">Electric field</option><option value="B">Magnetic field</option><option value="S">Energy flux</option></select></label>
+      <label class="top-control">Field <select id="em-field"><option value="E">Electric field</option><option value="B">Magnetic field</option><option value="S">Energy flux</option><option value="U">Energy density</option></select></label>
       <label class="top-control">Frequency <input id="em-frequency" type="number" min="${minFreq}" max="${maxFreq}" step="0.01" value="${freq}" title="Simulation frequency"></label>
       <label class="top-control">Wave speed <input id="em-speed" type="number" min="${minSpeed}" max="${maxSpeed}" step="0.1" value="${c}" title="Simulation wave speed"></label>
       <label class="top-control">Quality <select id="em-quality"><option value="1">Low</option><option value="2" selected>Medium</option><option value="3">High</option></select></label>
       <label class="top-control" title="Cache phase-indexed field heatmaps; arrows and currents remain continuous"><input id="em-temporal" type="checkbox" checked> Temporal cache</label>
+      <button id="em-advanced" aria-expanded="false" aria-controls="em-advanced-panel">Advanced</button>
+      <button id="em-radiation" aria-expanded="false" aria-controls="em-radiation-panel">Radiation pattern</button>
     </header>
     <div class="body">
       <nav class="tools" aria-label="Workspace tools">
@@ -1957,6 +1989,20 @@ function mountInterface() {
         <div class="section muted">Wheel to zoom · 0 to reset<br>V select · H pan · A add<br>Esc cancel · Delete selected<br><br><br><br><span style="color:#ffff00">› Yellow wire chevrons: current I(t)</span><br>Direction reverses with the instantaneous conventional current.</div>
       </aside>
     </div>
+    <section id="em-advanced-panel" class="floating-panel" hidden aria-label="Advanced display settings">
+      <div class="panel-heading"><strong>Display settings</strong><button id="em-advanced-close" aria-label="Close display settings">×</button></div>
+      <p class="muted">Gamma is applied after intensity compression. Below 1 reveals weaker values; above 1 emphasizes stronger values.</p>
+      ${Object.entries(displayGamma).map(([key,value])=>`<label class="property">${{heatmap:'Heatmap gamma',arrows:'Arrow-length gamma',current:'Current-color gamma'}[key]} <output id="em-gamma-${key}-value">${value}</output><input id="em-gamma-${key}" type="range" min="0.1" max="3" step="0.05" value="${value}"></label>`).join('')}
+      <button id="em-gamma-reset">Reset display settings</button>
+      <p class="muted">Energy density: u = ½(E²/c² + B²), instantaneous normalized units. No arrows.</p>
+    </section>
+    <section id="em-radiation-panel" class="floating-panel radiation-panel" hidden aria-label="Far-field radiation pattern">
+      <div class="panel-heading"><strong>Far-field · XY cut</strong><button id="em-radiation-close" aria-label="Close radiation pattern">×</button></div>
+      <label>Power scale <select id="em-radiation-scale"><option value="db">Log · −40 to 0 dB</option><option value="log1p">log1p · normalized power</option></select></label>
+      <canvas id="em-radiation-canvas" aria-label="Normalized angular radiation power"></canvas>
+      <p class="muted" id="em-radiation-note"></p>
+      <p class="muted">Peak-normalized power, averaged over a cycle. Includes solved passive currents and PEC images. Angles follow the simulation axes; this is a 2D cut of the 3D pattern.</p>
+    </section>
     <footer class="footer"><span class="status" role="status" id="em-status"></span><span id="em-grid"></span><span id="em-wavelength"></span><span id="em-fps">FPS —</span><span id="em-temporal-stats" title="Compare with Temporal cache unchecked"></span><div class="zoom-controls"><button id="em-zoom-out" aria-label="Zoom out">−</button><button id="em-zoom-reset" title="Reset zoom (0)">100%</button><button id="em-zoom-in" aria-label="Zoom in">+</button></div></footer>`;
   document.body.appendChild(root);
   ui.root = root;
@@ -1975,6 +2021,26 @@ function mountInterface() {
     find('palette-items').appendChild(button);
   }
   ui.play.onclick = togglePause;
+  for(const name of ['advanced','radiation']) {
+    const panel=find(name+'-panel'),button=find(name);
+    const toggle=open=>{panel.hidden=!open;button.setAttribute('aria-expanded',String(open)); if(open){const other=name==='advanced'?'radiation':'advanced';find(other+'-panel').hidden=true;find(other).setAttribute('aria-expanded','false');} };
+    button.onclick=()=>toggle(panel.hidden);
+    find(name+'-close').onclick=()=>{toggle(false);button.focus();};
+  }
+  for(const key of Object.keys(displayGamma)) find('gamma-'+key).oninput=e=>{
+    displayGamma[key]=+e.target.value;find('gamma-'+key+'-value').textContent=e.target.value;resetTemporalCache();
+  };
+  find('gamma-reset').onclick=()=>{for(const [key,value] of Object.entries({heatmap:1,arrows:1,current:.35})){
+    displayGamma[key]=value;find('gamma-'+key).value=value;find('gamma-'+key+'-value').textContent=value;
+  }resetTemporalCache();};
+  // High is automatic only on desktop-class devices with at least 16 logical cores
+  // and 8 GB reported memory. Unknown capabilities default to Medium; manual selection wins.
+  const nav=window.navigator;
+  resolution=nav.hardwareConcurrency>=16 && nav.deviceMemory>=8 &&
+    window.matchMedia('(hover: hover) and (pointer: fine)').matches &&
+    !nav.connection?.saveData ? 3 : 2;
+  sLength=resolution===3?2:4;
+  find('quality').value=String(resolution);
   find('example').onchange = e => {
     const key=e.target.value;
     if (key) loadExampleScene(key);
@@ -1982,7 +2048,7 @@ function mountInterface() {
     e.target.value='';
   };
   find('field').onchange = e => {
-    show_EField = e.target.value === 'E'; show_BField = e.target.value === 'B'; show_EnergyFlux = e.target.value === 'S';
+    show_EField = e.target.value === 'E'; show_BField = e.target.value === 'B'; show_EnergyFlux = e.target.value === 'S'; show_EnergyDensity = e.target.value === 'U';
     find('field-tag').textContent = e.target.selectedOptions[0].textContent + ' · XY plane';
   };
   function bindNumber(id, read, write) {
@@ -2164,6 +2230,30 @@ function hitComponent(point) {
 }
 function bindCanvasEvents() {
   const canvas=ui.canvas;
+  const touches=new Map(); let pinch=null, multiTouch=false;
+  const geometry=()=>{const [a,b]=[...touches.values()];return {x:(a[0]+b[0])/2,y:(a[1]+b[1])/2,d:Math.max(1,Math.hypot(a[0]-b[0],a[1]-b[1]))};};
+  canvas.addEventListener('pointerdown',e=>{
+    if(e.pointerType!=='touch')return;
+    touches.set(e.pointerId,pointerLocation(e));canvas.setPointerCapture(e.pointerId);
+    if(touches.size>=2){multiTouch=true;pinch=geometry();pointerGesture=null;e.preventDefault();e.stopImmediatePropagation();}
+  },true);
+  canvas.addEventListener('pointermove',e=>{
+    if(!touches.has(e.pointerId))return;
+    touches.set(e.pointerId,pointerLocation(e));
+    if(!multiTouch)return;
+    e.preventDefault();e.stopImmediatePropagation();
+    if(touches.size>=2){const next=geometry();
+      if(pinch){setViewZoom(zoom*next.d/pinch.d,pinch.x,pinch.y);orig[0]+=next.x-pinch.x;orig[1]+=next.y-pinch.y;requestCameraUpdate();}
+      pinch=next;
+    }
+  },true);
+  const endTouch=e=>{
+    if(!touches.has(e.pointerId))return;
+    touches.delete(e.pointerId);
+    if(multiTouch){e.preventDefault();e.stopImmediatePropagation();pointerGesture=null;pinch=touches.size>=2?geometry():null;
+      if(!touches.size){multiTouch=false;canvas.style.cursor=activeTool==='pan'?'grab':'default';}requestCameraUpdate();}
+  };
+  for(const name of ['pointerup','pointercancel','lostpointercapture'])canvas.addEventListener(name,endTouch,true);
   canvas.tabIndex=0; canvas.setAttribute('aria-label','Electromagnetic field. Choose a source from Add and follow the placement hint.');
   canvas.addEventListener('pointerdown',e=>{
     if (pointerGesture || (e.button!==0 && e.button!==1)) return;
@@ -2257,6 +2347,7 @@ function draw() {
   background(0);
   renderFields();
   drawComponentOverlay();
+  renderRadiationPattern();
   updateStatus();
   // Allow a painted "Updating" state before the synchronous coupled solve.
   if (fieldTiles.dirtyPhysics && !pointerGesture && millis()>=zoomRebuildAfter) {
@@ -2271,7 +2362,7 @@ function currentColor(source,index) {
   const re=drive.a*frameCos-drive.b*frameSin, im=drive.a*frameSin+drive.b*frameCos;
   const magnitude=Math.hypot(j[0]*re-j[2]*im,j[1]*re-j[3]*im);
 	
-  const bright = 255 * Math.pow(squiz(magnitude, k8, 256), 0.35);
+  const bright = 255 * Math.pow(squiz(magnitude, k8, 256), displayGamma.current);
   return [bright,bright,0];
 }
 // Current markers use a separate wire-bound visual language from field vectors.
@@ -2357,9 +2448,10 @@ function drawPECSurfaceCurrentDensity(plane){
     const nx=-uy,ny=ux;
     // Larger *filled* arrowheads and an orange-to-yellow magnitude ramp make
     // the instantaneous sign and amplitude visible against the silver trace.
-    const strength=Math.pow(squiz(mag,0.24),0.5);
-    const length=20+12*strength;
-    const head=10+2*strength;
+    const strength=Math.pow(squiz(mag,0.24),0.5*displayGamma.current/0.35);
+    const arrowStrength=Math.pow(squiz(mag,0.24),0.5*displayGamma.arrows);
+    const length=20+12*arrowStrength;
+    const head=10+2*arrowStrength;
     const wing=5.7;
     const half=length/2;
     const tx=s.sx-half*ux,ty=s.sy-half*uy;
@@ -2503,3 +2595,52 @@ function updateStatus() {
   ui.root.querySelector('#em-zoom-reset').textContent=`${Math.round(zoom*100)}%`;
 }
 
+
+// Radiation limit of the same exp(+i omega t), exp(-ikr)/r Green function.
+// Its common omega/r factor cancels when power is peak-normalized.
+function farFieldPower(scene,theta) {
+  const nx=Math.cos(theta),ny=Math.sin(theta),p=scene.plane;
+  const side=p?nx*p.nx+ny*p.ny:0;
+  // The mathematical PEC plane itself has no exterior observation half-space.
+  if(p&&Math.abs(side)<1e-12)return 0;
+  let re=0,im=0;const e=scene.elements;
+  for(let i=0;i<e.length;i+=8){
+    if(p&&side*e[i+7]<=0)continue;
+    const phase=scene.k*(nx*e[i]+ny*e[i+1]),co=Math.cos(phase),si=Math.sin(phase);
+    const jr=-ny*e[i+2]+nx*e[i+3],ji=-ny*e[i+4]+nx*e[i+5];
+    re+=jr*co-ji*si;im+=jr*si+ji*co;
+  }
+  return re*re+im*im;
+}
+const radiationCache={scene:null,power:null,peak:0,stamp:''};
+function renderRadiationPattern() {
+  const panel=document.getElementById('em-radiation-panel');
+  if(!panel||panel.hidden)return;
+  const canvas=document.getElementById('em-radiation-canvas'),scene=fieldTiles.scene;
+  const scale=document.getElementById('em-radiation-scale').value;
+  const note=document.getElementById('em-radiation-note');
+  const pending=fieldTiles.dirtyPhysics||!simulate||passiveSolveInfo.error;
+  if(pending||!scene){note.textContent=passiveSolveInfo.error?passiveSolveInfo.message:'Updating currents…';canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);radiationCache.stamp='';return;}
+  if(radiationCache.scene!==scene){
+    const power=new Float64Array(720);let peak=0;
+    for(let i=0;i<power.length;i++){power[i]=farFieldPower(scene,2*Math.PI*i/power.length);peak=Math.max(peak,power[i]);}
+    radiationCache.scene=scene;radiationCache.power=power;radiationCache.peak=peak;radiationCache.stamp='';
+  }
+  const rect=canvas.getBoundingClientRect(),w=Math.max(1,Math.round(rect.width)),h=Math.max(1,Math.round(rect.height));
+  const stamp=[w,h,scale].join(':');if(stamp===radiationCache.stamp)return;radiationCache.stamp=stamp;
+  const dpr=Math.min(window.devicePixelRatio||1,2);canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);
+  const ctx=canvas.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+  const cx=w/2,cy=h/2,R=Math.max(1,Math.min(w,h)/2-32);
+  ctx.font='11px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';
+  const radial=q=>scale==='db'?Math.max(0,(10*Math.log10(Math.max(q,1e-4))+40)/40):Math.log1p(99*q)/Math.log(100);
+  ctx.lineWidth=1;ctx.strokeStyle='#394658';ctx.fillStyle='#aebccd';
+  for(const db of [-30,-20,-10,0]){const r=R*radial(10**(db/10));ctx.beginPath();ctx.arc(cx,cy,r,0,2*Math.PI);ctx.stroke();ctx.fillText(scale==='db'?db+' dB':(10**(db/10)).toFixed(db===0?0:3),cx+4,cy-r+9);}
+  for(let i=0;i<8;i++){const a=i*Math.PI/4,x=Math.cos(a),y=-Math.sin(a);ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+R*x,cy+R*y);ctx.stroke();ctx.fillText(i*45+'°',cx+(R+19)*x,cy+(R+19)*y);}
+  const peak=radiationCache.peak;
+  note.textContent=peak>0?(scale==='db'?'Outer ring: 0 dB; center: −40 dB or below.':'Radius = log(1 + 99 P/Pmax) / log(100).'):'No radiating current in this cut.';
+  if(!peak)return;
+  ctx.strokeStyle='#77e2c3';ctx.lineWidth=2;ctx.beginPath();
+  const power=radiationCache.power;
+  for(let i=0;i<=power.length;i++){const a=i*2*Math.PI/power.length,r=R*radial(power[i%power.length]/peak);const x=cx+r*Math.cos(a),y=cy-r*Math.sin(a);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);}
+  ctx.closePath();ctx.stroke();
+}
