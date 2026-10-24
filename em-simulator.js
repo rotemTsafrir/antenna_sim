@@ -1922,23 +1922,37 @@ html,body {margin:0!important;padding:0!important;width:100%;height:100%;overflo
 #em-app #em-radiation-canvas {display:block;width:100%;height:auto;aspect-ratio:1;max-height:58dvh;}
 #em-app .tools {overflow-y:auto;min-height:0;}
 @media (pointer:coarse), (max-width:680px) {
- #em-app {height:100dvh;bottom:auto;}
- #em-app .topbar {max-height:28dvh;overflow:auto;overscroll-behavior:contain;}
- #em-app .top-control input[type=checkbox] {width:auto;}
+ html,body { -webkit-text-size-adjust:100%;text-size-adjust:100%; }
+ #em-app {height:100dvh;bottom:auto;padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);}
+ /* Fixed-height rows do not squeeze or rewrap controls during rotation.
+    All controls remain reachable by horizontal scrolling. */
+ #em-app .topbar {display:grid;grid-template-rows:repeat(2,44px);grid-auto-flow:column;grid-auto-columns:max-content;align-items:stretch;gap:6px 10px;padding:8px 10px;min-width:0;max-height:none;overflow-x:auto;overflow-y:hidden;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;}
+ #em-app .brand {min-width:135px;margin:0;}
+ #em-app .brand small {display:none;}
+ #em-app .top-control {white-space:nowrap;min-width:0;gap:6px;}
+ #em-app .top-control input[type=checkbox] {width:20px;min-height:20px;flex:none;}
+ #em-app .top-control input[type=number] {width:76px;}
+ #em-app .top-control select {max-width:180px;}
  #em-app input[type=number],#em-app select {font-size:16px;}
- #em-app .footer {max-height:16dvh;overflow:auto;}
+ #em-app button,#em-app select,#em-app input[type=number] {min-height:44px;flex-shrink:0;touch-action:manipulation;}
+ #em-app .footer {flex-wrap:nowrap;min-width:0;max-height:none;overflow-x:auto;overflow-y:hidden;gap:8px;padding:5px 10px;overscroll-behavior:contain;}
+ #em-app .footer > * {flex-shrink:0;white-space:nowrap;}
+ #em-app .footer .status {margin-right:0;}
+ #em-app .footer > span {order:1;}
+ #em-app .zoom-controls button {min-width:44px;min-height:44px;}
  #em-app .floating-panel {top:8px;right:8px;max-height:calc(100% - 16px);}
  #em-app .body {grid-template-columns:52px minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(0,30%);}
- #em-app .tools {grid-row:1 / 3;padding:8px 4px;}
+ #em-app .workspace {grid-column:2;grid-row:1;}
+ #em-app .tools {grid-column:1;grid-row:1 / 3;padding:8px 4px;}
+ #em-app .tools > * {flex-shrink:0;}
  #em-app .inspector {grid-column:2;grid-row:2;border-left:0;border-top:1px solid var(--line);padding:12px;}
 }
-@media (pointer:coarse) and (orientation:landscape) {
- #em-app .topbar {max-height:24dvh;}
- #em-app .body {grid-template-columns:52px minmax(0,1fr) 220px;grid-template-rows:minmax(0,1fr);}
+@media (pointer:coarse) and (orientation:landscape), (max-width:680px) and (orientation:landscape) {
+ #em-app .body {grid-template-columns:52px minmax(0,1fr) min(220px,30vw);grid-template-rows:minmax(0,1fr);}
  #em-app .tools {grid-row:1;}
  #em-app .inspector {grid-column:3;grid-row:1;border-top:0;border-left:1px solid var(--line);}
- #em-app .footer {max-height:14dvh;}
 }
+
 
 `;
 
@@ -2231,6 +2245,14 @@ function hitComponent(point) {
 function bindCanvasEvents() {
   const canvas=ui.canvas;
   const touches=new Map(); let pinch=null, multiTouch=false;
+  ui.cancelCanvasGesture=()=>{
+    const ids=new Set(touches.keys());if(pointerGesture)ids.add(pointerGesture.id);
+    const rotated=!!pointerGesture?.rotate;
+    touches.clear();pinch=null;multiTouch=false;pointerGesture=null;hoverPoint=null;
+    for(const id of ids)if(canvas.hasPointerCapture(id))canvas.releasePointerCapture(id);
+    canvas.style.cursor=activeTool==='pan'?'grab':activeTool==='add'?'crosshair':'default';
+    if(rotated)requestFieldUpdate();
+  };
   const geometry=()=>{const [a,b]=[...touches.values()];return {x:(a[0]+b[0])/2,y:(a[1]+b[1])/2,d:Math.max(1,Math.hypot(a[0]-b[0],a[1]-b[1]))};};
   canvas.addEventListener('pointerdown',e=>{
     if(e.pointerType!=='touch')return;
@@ -2328,12 +2350,22 @@ function setup() {
   loadExampleScene('rotating', false);
   setTool('pan');
   bindCanvasEvents();
+  const orientationChanged=()=>{
+    ui.cancelCanvasGesture();
+    // A formerly valid scroll offset can hide controls after the viewport turns.
+    for(const selector of ['.topbar','.footer','.tools']){
+      const panel=ui.root.querySelector(selector);panel.scrollTop=0;panel.scrollLeft=0;
+    }
+  };
+  if(window.screen?.orientation?.addEventListener)window.screen.orientation.addEventListener('change',orientationChanged);
+  else window.addEventListener('orientationchange',orientationChanged);
   time=millis()/timeScale;
 }
 function draw() {
   ensureFieldModelCurrent();
   const w=Math.max(1,ui.workspace.clientWidth), h=Math.max(1,ui.workspace.clientHeight);
   if (w!==width || h!==height) {
+    ui.cancelCanvasGesture?.();
     orig[0]+=(w-width)/2; orig[1]+=(h-height)/2;
     resizeCanvas(w,h); width=w; height=h; requestCameraUpdate();
   }
