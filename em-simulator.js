@@ -1941,11 +1941,13 @@ html,body {margin:0!important;padding:0!important;width:100%;height:100%;overflo
  #em-app button,#em-app select,#em-app input[type=number] {min-height:44px;flex-shrink:0;touch-action:manipulation;}
  #em-app input[type=number],#em-app select {font-size:16px;}
  #em-app .top-control input[type=number] {width:90px;}
- #em-app .body {position:relative;grid-template-columns:52px minmax(0,1fr);grid-template-rows:minmax(0,1fr);}
- #em-app .workspace {grid-column:2;grid-row:1;}
- #em-app .tools {grid-column:1;grid-row:1;padding:8px 4px;}
- #em-app .tools > * {flex-shrink:0;}
- #em-app .inspector {display:none;position:absolute;z-index:4;right:0;top:0;bottom:0;width:min(320px,calc(100% - 52px));padding:12px;border:1px solid var(--line);box-shadow:0 8px 24px #0009;overflow:auto;}
+ #em-app .body {position:relative;grid-template-columns:minmax(0,1fr);grid-template-rows:54px minmax(0,1fr);}
+ #em-app .workspace {grid-column:1;grid-row:2;}
+ #em-app .tools {grid-column:1;grid-row:1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-template-rows:44px;gap:6px;padding:5px 8px;overflow:hidden;border-right:0;border-bottom:1px solid var(--line);}
+ #em-app .tools > .divider {display:none;}
+ #em-app .tools > .tool {display:flex;flex-direction:row;justify-content:center;align-items:center;gap:4px;width:100%;min-width:0;height:44px;min-height:44px;margin:0;padding:4px;font-size:11px;line-height:1;}
+ #em-app .tools > .tool svg {flex:none;width:18px;height:18px;pointer-events:none;}
+ #em-app .inspector {display:none;position:absolute;z-index:4;right:0;top:54px;bottom:0;width:min(320px,100%);padding:12px;border:1px solid var(--line);box-shadow:0 8px 24px #0009;overflow:auto;}
  #em-app .inspector.mobile-inspector-open {display:block;}
  #em-app .footer {flex-wrap:nowrap;justify-content:space-between;gap:6px;padding:5px 8px;min-width:0;}
  #em-app .footer > span {display:none;}
@@ -1981,7 +1983,8 @@ function mountMobileControls(root) {
   inspector.id='em-inspector';properties.setAttribute('aria-controls',inspector.id);root.querySelector('.tools').appendChild(properties);
   const close=document.createElement('button');close.type='button';close.className='mobile-only';close.textContent='Close properties';inspector.prepend(close);
   const showInspector=open=>{inspector.classList.toggle('mobile-inspector-open',open);properties.setAttribute('aria-expanded',String(open));};
-  properties.onclick=()=>showInspector(!inspector.classList.contains('mobile-inspector-open'));
+  properties.onclick=()=>{closePalette();showInspector(!inspector.classList.contains('mobile-inspector-open'));};
+  for(const id of ['em-select','em-pan','em-add'])root.querySelector('#'+id).addEventListener('click',()=>showInspector(false));
   close.onclick=()=>{showInspector(false);properties.focus();};
   const mobile=window.matchMedia('(max-width:680px), (max-width:1000px) and (pointer:coarse)');
   const sync=()=>{
