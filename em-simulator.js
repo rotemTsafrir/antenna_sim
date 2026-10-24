@@ -1915,48 +1915,83 @@ html,body {margin:0!important;padding:0!important;width:100%;height:100%;overflo
 #em-app .zoom-controls button {min-height:26px;padding:2px 8px;font-size:11px;}
 #em-app .empty {padding:18px 0;line-height:1.7;color:var(--muted);}
 @media(max-width:1000px) {#em-app .topbar {gap:8px;padding:9px 12px;}#em-app .body {grid-template-columns:58px minmax(0,1fr) 240px;}#em-app .brand {min-width:145px;}#em-app .brand strong{font-size:14px;}#em-app .top-control{font-size:11px;}}
-@media(max-width:680px) {#em-app .body{grid-template-columns:52px minmax(0,1fr);grid-template-rows:minmax(180px,1fr) minmax(120px,34%);}#em-app .tools{grid-row:1 / 3;padding:10px 4px;}#em-app .inspector{grid-column:2;grid-row:2;border-left:0;border-top:1px solid var(--line);padding:14px;}#em-app .topbar{gap:7px;}#em-app .brand{min-width:135px;}#em-app .brand small{display:none;}#em-app .top-control input{width:65px;}#em-app .top-control select{max-width:125px;}#em-app .footer{padding:6px 10px;gap:6px 10px;}#em-app .hint{font-size:11px;bottom:9px;}#em-app .property{margin-bottom:12px;}}
+
 #em-app .floating-panel {position:absolute;z-index:5;right:16px;top:72px;width:min(360px,calc(100% - 24px));max-height:calc(100% - 90px);overflow:auto;padding:16px;border:1px solid #405368;border-radius:12px;background:#121923f5;box-shadow:0 12px 40px #0009;}
 #em-app .panel-heading {display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;}
 #em-app .radiation-panel {width:min(470px,calc(100% - 24px));}
 #em-app #em-radiation-canvas {display:block;width:100%;height:auto;aspect-ratio:1;max-height:58dvh;}
 #em-app .tools {overflow-y:auto;min-height:0;}
-@media (pointer:coarse), (max-width:680px) {
- html,body { -webkit-text-size-adjust:100%;text-size-adjust:100%; }
+#em-app .mobile-only {display:none;}
+#em-app .desktop-controls {display:contents;}
+#em-app #em-mobile-controls-dialog {box-sizing:border-box;width:min(420px,calc(100% - 24px));max-height:calc(100dvh - 24px);padding:16px;overflow:auto;overscroll-behavior:contain;border:1px solid #405368;border-radius:12px;background:#121923;color:#e6edf5;}
+#em-mobile-controls-dialog::backdrop {background:#0009;}
+#em-app #em-mobile-controls-dialog .desktop-controls {display:grid;gap:12px;}
+#em-app #em-mobile-controls-dialog .top-control {display:flex;justify-content:space-between;font-size:13px;gap:10px;}
+#em-app #em-mobile-controls-dialog select {max-width:240px;min-width:0;}
+#em-app #em-mobile-controls-dialog input[type=checkbox] {width:22px;}
+@media (max-width:680px), (max-width:1000px) and (pointer:coarse) {
+ html,body {-webkit-text-size-adjust:100%;text-size-adjust:100%;}
  #em-app {height:100dvh;bottom:auto;padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom);}
- /* Fixed-height rows do not squeeze or rewrap controls during rotation.
-    All controls remain reachable by horizontal scrolling. */
- #em-app .topbar {display:grid;grid-template-rows:repeat(2,44px);grid-auto-flow:column;grid-auto-columns:max-content;align-items:stretch;gap:6px 10px;padding:8px 10px;min-width:0;max-height:none;overflow-x:auto;overflow-y:hidden;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;}
- #em-app .brand {min-width:135px;margin:0;}
+ #em-app .mobile-only {display:block;}
+ #em-app .topbar {display:flex;flex-wrap:nowrap;gap:6px;padding:6px 8px;min-width:0;overflow:visible;}
+ #em-app .brand {min-width:0;flex:1;margin:0;gap:5px;}
+ #em-app .brand strong {font-size:13px;}
  #em-app .brand small {display:none;}
- #em-app .top-control {white-space:nowrap;min-width:0;gap:6px;}
- #em-app .top-control input[type=checkbox] {width:20px;min-height:20px;flex:none;}
- #em-app .top-control input[type=number] {width:76px;}
- #em-app .top-control select {max-width:180px;}
- #em-app input[type=number],#em-app select {font-size:16px;}
+ #em-app .brand-mark {font-size:20px;}
  #em-app button,#em-app select,#em-app input[type=number] {min-height:44px;flex-shrink:0;touch-action:manipulation;}
- #em-app .footer {flex-wrap:nowrap;min-width:0;max-height:none;overflow-x:auto;overflow-y:hidden;gap:8px;padding:5px 10px;overscroll-behavior:contain;}
- #em-app .footer > * {flex-shrink:0;white-space:nowrap;}
- #em-app .footer .status {margin-right:0;}
- #em-app .footer > span {order:1;}
+ #em-app input[type=number],#em-app select {font-size:16px;}
+ #em-app .top-control input[type=number] {width:90px;}
+ #em-app .body {position:relative;grid-template-columns:52px minmax(0,1fr);grid-template-rows:minmax(0,1fr);}
+ #em-app .workspace {grid-column:2;grid-row:1;}
+ #em-app .tools {grid-column:1;grid-row:1;padding:8px 4px;}
+ #em-app .tools > * {flex-shrink:0;}
+ #em-app .inspector {display:none;position:absolute;z-index:4;right:0;top:0;bottom:0;width:min(320px,calc(100% - 52px));padding:12px;border:1px solid var(--line);box-shadow:0 8px 24px #0009;overflow:auto;}
+ #em-app .inspector.mobile-inspector-open {display:block;}
+ #em-app .footer {flex-wrap:nowrap;justify-content:space-between;gap:6px;padding:5px 8px;min-width:0;}
+ #em-app .footer > span {display:none;}
  #em-app .zoom-controls button {min-width:44px;min-height:44px;}
  #em-app .floating-panel {top:8px;right:8px;max-height:calc(100% - 16px);}
- #em-app .body {grid-template-columns:52px minmax(0,1fr);grid-template-rows:minmax(0,1fr) minmax(0,30%);}
- #em-app .workspace {grid-column:2;grid-row:1;}
- #em-app .tools {grid-column:1;grid-row:1 / 3;padding:8px 4px;}
- #em-app .tools > * {flex-shrink:0;}
- #em-app .inspector {grid-column:2;grid-row:2;border-left:0;border-top:1px solid var(--line);padding:12px;}
-}
-@media (pointer:coarse) and (orientation:landscape), (max-width:680px) and (orientation:landscape) {
- #em-app .body {grid-template-columns:52px minmax(0,1fr) min(220px,30vw);grid-template-rows:minmax(0,1fr);}
- #em-app .tools {grid-row:1;}
- #em-app .inspector {grid-column:3;grid-row:1;border-top:0;border-left:1px solid var(--line);}
+ #em-app .hint {font-size:11px;bottom:8px;}
 }
 
 
 `;
 
 function icon(paths) { return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`; }
+// Move the same controls between desktop header and a phone dialog: no duplicate
+// IDs, stale handlers or orientation-specific copies of the controls.
+function mountMobileControls(root) {
+  const bar=root.querySelector('.topbar');
+  const group=document.createElement('div');group.className='desktop-controls';
+  for(const child of [...bar.children])if(!child.classList.contains('brand')&&child.id!=='em-play')group.appendChild(child);
+  bar.appendChild(group);
+  const toggle=document.createElement('button');toggle.className='mobile-only';toggle.textContent='Controls';toggle.type='button';
+  toggle.setAttribute('aria-haspopup','dialog');toggle.setAttribute('aria-controls','em-mobile-controls-dialog');bar.appendChild(toggle);
+  const dialog=document.createElement('dialog');dialog.id='em-mobile-controls-dialog';dialog.setAttribute('aria-labelledby','em-mobile-controls-title');
+  dialog.innerHTML='<div class="panel-heading"><strong id="em-mobile-controls-title">Simulation controls</strong><button type="button" aria-label="Close simulation controls">Close</button></div>';
+  root.appendChild(dialog);
+  toggle.onclick=()=>{if(!dialog.open)dialog.showModal();};
+  dialog.querySelector('button').onclick=()=>dialog.close();
+  dialog.addEventListener('keydown',e=>e.stopPropagation());
+  dialog.addEventListener('close',()=>{if(mobile.matches)toggle.focus();});
+  // These open their own panels, which would otherwise be behind the modal.
+  for(const id of ['em-advanced','em-radiation'])root.querySelector('#'+id).addEventListener('click',()=>{if(dialog.open)dialog.close();});
+  const inspector=root.querySelector('.inspector');
+  const properties=document.createElement('button');properties.type='button';properties.className='tool mobile-only';properties.textContent='Edit';properties.title='Properties and scene';properties.setAttribute('aria-expanded','false');
+  inspector.id='em-inspector';properties.setAttribute('aria-controls',inspector.id);root.querySelector('.tools').appendChild(properties);
+  const close=document.createElement('button');close.type='button';close.className='mobile-only';close.textContent='Close properties';inspector.prepend(close);
+  const showInspector=open=>{inspector.classList.toggle('mobile-inspector-open',open);properties.setAttribute('aria-expanded',String(open));};
+  properties.onclick=()=>showInspector(!inspector.classList.contains('mobile-inspector-open'));
+  close.onclick=()=>{showInspector(false);properties.focus();};
+  const mobile=window.matchMedia('(max-width:680px), (max-width:1000px) and (pointer:coarse)');
+  const sync=()=>{
+    if(dialog.open)dialog.close();
+    if(mobile.matches)dialog.appendChild(group);else bar.insertBefore(group,toggle);
+    showInspector(false);
+  };
+  mobile.addEventListener('change',sync);sync();
+}
+
 function mountInterface() {
   if(!document.querySelector('meta[name=viewport]')){const viewport=document.createElement('meta');viewport.name='viewport';viewport.content='width=device-width, initial-scale=1';document.head.appendChild(viewport);}
   const style = document.createElement('style');
@@ -2020,6 +2055,7 @@ function mountInterface() {
     <footer class="footer"><span class="status" role="status" id="em-status"></span><span id="em-grid"></span><span id="em-wavelength"></span><span id="em-fps">FPS —</span><span id="em-temporal-stats" title="Compare with Temporal cache unchecked"></span><div class="zoom-controls"><button id="em-zoom-out" aria-label="Zoom out">−</button><button id="em-zoom-reset" title="Reset zoom (0)">100%</button><button id="em-zoom-in" aria-label="Zoom in">+</button></div></footer>`;
   document.body.appendChild(root);
   ui.root = root;
+  mountMobileControls(root);
   const find = id => root.querySelector(`#em-${id}`);
   for (const id of ['workspace','properties','scene','palette','hint','status','count','grid','wavelength']) ui[id] = find(id);
   ui.fps = find('fps');
