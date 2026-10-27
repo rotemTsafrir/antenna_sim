@@ -396,7 +396,7 @@ class Dipole extends PassiveWire {
     ['Current phase (°)',passiveSolveInfo.error?'Unavailable':(Math.atan2(i[1],i[0])*180/Math.PI).toFixed(1)],
     ...super.getReadouts()];}
   getNotes(){return [
-    ...(this.feedMode==='open'?[{text:'Open-circuit feed: net port current is constrained to zero and the induced terminal voltage is solved from all sources and scattering bodies. It is distinct from setting a voltage source to zero, which shorts the feed.'}]:[{text:'Ideal voltage source across a narrow feed region; zero source impedance. Feed separation is capped at 0.1 units, 2% of wavelength, 5% of wire length, and half the shorter arm, whichever is smallest. Voltage and current amplitudes are peak phasors in simulation units.'}]),
+    ...(this.feedMode==='open'?[{text:'Open-circuit feed: net port current is constrained to zero and the induced terminal voltage is solved from all sources and scattering bodies. It is distinct from setting a voltage source to zero, which shorts the feed.'}]:[{text:'Ideal voltage source across a narrow feed region; zero source impedance. Voltage and current amplitudes are peak phasors in simulation units.'}]),
     {text:'The feed uses a uniform impressed electric field over a short region. An equivalent axial electric current is retained through that region; detailed feed geometry and gap capacitance are not resolved.'},
     ...super.getNotes()];}
 }
