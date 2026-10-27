@@ -316,7 +316,6 @@ class PassiveWire extends Antenna {
     {key:'radius',label:'Wire radius',min:.008,max:.1,step:.002,get:()=>this.radius,set:v=>{this.radius=v;this.rebuild();}}
   ]; }
   getReadouts() { return [['Length',this.length.toFixed(3)],['Segments',String(this.meshCount)],['Unknowns',String(this.meshCount-1)],
-    ['Segment / λ',(this.meshLength/this.wavelength).toFixed(3)],
     ['Peak current',Math.max(...this.nodeCurrents.map(v=>Math.hypot(...v))).toPrecision(4)]]; }
   getNotes() {
     const notes=[
@@ -335,7 +334,7 @@ class PassiveWire extends Antenna {
 // Voltage-fed thin PEC rod. I0 remains unity: solved currents already include
 // ALL incident fields and feed phases. amp/phase describe the peak gap voltage.
 class Dipole extends PassiveWire {
-  constructor(wavelength,a,b,amp=50,phase=0) {
+  constructor(wavelength,a,b,amp=DEFAULT_WIRE_FEED_VOLTAGE,phase=0) {
     super(wavelength,a,b);
     this.amp=amp; this.phase=phase; this.I0=new ComplexNum(1,0);
     this.feedFraction=.5; this.meshMultiple=2;
@@ -387,6 +386,7 @@ class Dipole extends PassiveWire {
   ];}
   getReadouts(){const i=this.feedCurrent();return [
     ['Feed',this instanceof EndFedAntenna?'End feed with short counterpoise':'Balanced centre feed'],
+    ['Length / wavelength · L/λ',(this.length/this.wavelength).toFixed(4)],
     ['Feed separation',this.feedSeparation().toFixed(4)],
     ...(this.feedMode==='open'?[
       ['Induced feed voltage · peak',fieldTiles.dirtyPhysics||passiveSolveInfo.error?'Updating…':Math.hypot(...this.openVoltage).toPrecision(5)],
@@ -403,7 +403,7 @@ class Dipole extends PassiveWire {
 // A physically closed port requires a return conductor. The short A-side arm
 // is explicit and participates in the same solve, rather than an invisible ground.
 class EndFedAntenna extends Dipole {
-  constructor(wavelength,a,b,amp=10,phase=0){
+  constructor(wavelength,a,b,amp=DEFAULT_WIRE_FEED_VOLTAGE,phase=0){
     super(wavelength,a,b,amp,phase);this.feedFraction=.05;this.meshMultiple=20;this.rebuild();
   }
   getProperties(){return [...super.getProperties(),
@@ -1061,6 +1061,7 @@ const maxAmp = 25;
 
 //default current magnitude
 const defAmp = 10;
+const DEFAULT_WIRE_FEED_VOLTAGE = 150; // 3 × the supplied wire constructor default (50).
 
 //
 const maxSep = 0.4;
@@ -1239,12 +1240,71 @@ const fieldTiles={epoch:0,previous:0,baseStep:0,previousStep:0,previousFreq:0,re
   viewKey:'',ring:1,jobTimer:null,viewTimer:null,frameMs:16.7,lastFrame:0,clock:0,
   received:0,cacheHits:0,lastCameraX:0,lastCameraY:0,panX:0,panY:0,progress:0,preview:false,currentComplete:false};
 function fieldTileKey(epoch,level,tx,ty){return epoch+':'+level+':'+tx+':'+ty;}
+// Camera-only LOD: never changes sLength, element dl, MoM mesh, or scene epoch.
+const adaptiveFields={enabled:true,level:0,penalty:0,slowSince:0,fastSince:0,
+  changedAt:0,cameraAt:0,lastZoom:1,baselineMs:0,baselineSince:0,baselineSum:0,baselineSamples:0};
 function fieldCameraLevel(){
-  // Coarser samples while zoomed out; also cap the visible working set so it
-  // cannot exceed the bounded cache on a large/high-DPI viewport.
-  let level=zoom<.75?1:0;
-  while(Math.ceil(width/(sLength*zoom*2**level)/32+2)*Math.ceil(height/(sLength*zoom*2**level)/32+2)>600)level++;
+  let level=adaptiveFields.enabled?Math.min(0,adaptiveFields.level):0;
+  // Bound raster cost as well as tile memory; CSS pixels, not device pixels.
+  const maxCells=typeof navigator!=='undefined'&&/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent||'')?90000:180000;
+  // Both modes obey the same safety limits. Starting adaptive at level <= 0
+  // keeps it at least as fine as the fixed grid at this zoom, including its cap.
+  while(width*height/(sLength*zoom*2**level)**2>maxCells ||
+    Math.ceil(width/(sLength*zoom*2**level)/32+2)*Math.ceil(height/(sLength*zoom*2**level)/32+2)>600)level++;
   return level;
+}
+function updateAdaptiveFieldResolution(now=performance.now()){
+  const a=adaptiveFields;if(!a.enabled||!simulate||fieldTiles.dirtyPhysics||document.hidden)return;
+  const old=fieldCameraLevel();
+  if(zoom!==a.lastZoom){a.lastZoom=zoom;a.cameraAt=now;a.fastSince=0;}
+  const moving=!!pointerGesture||now-a.cameraAt<180;
+  // Calibrate on completed, stationary frames before adding detail. A stable
+  // 30 Hz device must not be permanently blocked by a hard-coded 45 FPS gate.
+  if(!a.baselineMs){
+    if(moving||waitProcess){a.baselineSince=0;a.baselineSum=0;a.baselineSamples=0;}
+    else{
+      if(!a.baselineSince)a.baselineSince=now;
+      a.baselineSum+=fieldTiles.frameMs;a.baselineSamples++;
+      if(now-a.baselineSince>=600)a.baselineMs=Math.max(16.7,a.baselineSum/a.baselineSamples);
+    }
+  }
+  const baseline=a.baselineMs||16.7;
+  // Camera motion and rebuilding tiles are transient costs, not steady load.
+  // Do not let a zoom or preset change accumulate a lasting quality penalty.
+  if(moving||waitProcess||!a.baselineMs){a.slowSince=0;a.fastSince=0;}
+  // Sustained slowdown backs off quickly; recovery needs several steady seconds.
+  else if(fieldTiles.frameMs>baseline*1.45){
+    a.fastSince=0;if(!a.slowSince)a.slowSince=now;
+    if(now-a.slowSince>900&&now-a.changedAt>1200){a.penalty=Math.min(3,a.penalty+1);a.slowSince=now;a.changedAt=now;}
+  }else{
+    a.slowSince=0;
+    if(fieldTiles.frameMs<baseline*1.12&&!moving&&!waitProcess){
+      if(!a.fastSince)a.fastSince=now;
+      if(now-a.fastSince>5000&&now-a.changedAt>5000){a.penalty=Math.max(0,a.penalty-1);a.fastSince=now;a.changedAt=now;}
+    }else a.fastSince=0;
+  }
+  // Hysteresis around powers of two avoids flickering between grids at a boundary.
+  const targetPixels=sLength*2**a.penalty;
+  let next=Math.min(0,a.level);
+  while(sLength*zoom*2**next<targetPixels*.70&&next<0)next++;
+  if(a.baselineMs&&!moving&&!waitProcess&&fieldTiles.frameMs<baseline*1.3&&now-a.changedAt>450&&sLength*zoom*2**next>targetPixels*1.55&&next>-3)next--;
+  a.level=next;
+  if(fieldCameraLevel()!==old){
+    a.changedAt=now;a.fastSince=0;
+    fieldTiles.revision++;fieldTiles.viewKey='';resetTemporalCache();fieldPlan(true);
+  }
+}
+function resetAdaptiveFieldController(){
+  const a=adaptiveFields;
+  a.level=0;a.penalty=0;a.slowSince=0;a.fastSince=0;
+  a.baselineMs=0;a.baselineSince=0;a.baselineSum=0;a.baselineSamples=0;
+  a.changedAt=performance.now();a.lastZoom=zoom;
+  a.cameraAt=a.changedAt;
+  fieldTiles.lastFrame=0;fieldTiles.frameMs=16.7;
+}
+function setAdaptiveFieldResolution(enabled){
+  adaptiveFields.enabled=!!enabled;resetAdaptiveFieldController();
+  fieldTiles.viewKey='';requestCameraUpdate();resetTemporalCache();
 }
 function fieldTileBounds(level){
   const size=32*sLength*zoom*2**level;
@@ -1338,11 +1398,12 @@ function fieldSchedule(){
     if(background&&(pointerGesture||fieldTiles.frameMs>22)){fieldTiles.jobTimer=setTimeout(()=>{fieldTiles.jobTimer=null;fieldSchedule();},120);return;}
     fieldTiles.queue.shift();const id=++fieldTiles.serial;
     fieldTiles.pending={...task,id};
-    fieldTiles.worker.postMessage({kind:'tile',epoch:fieldTiles.epoch,id,...task,budget:fieldTiles.fallback?2:background?3:6});
+    fieldTiles.worker.postMessage({kind:'tile',epoch:fieldTiles.epoch,id,...task,budget:fieldTiles.fallback?(fieldTiles.frameMs>22?1:2):background?2:fieldTiles.frameMs>22?3:6});
   },fieldTiles.queue[0]?.priority>=100000?24:0);
 }
 function requestCameraUpdate(){
   // Camera changes never invalidate physics or the world-space tiles.
+  adaptiveFields.cameraAt=performance.now();
   fieldTiles.revision++;
   if(fieldTiles.viewTimer)return;
   fieldTiles.viewTimer=setTimeout(()=>{fieldTiles.viewTimer=null;fieldPlan(true);},35);
@@ -1400,6 +1461,7 @@ function startProcessingNewSetup(){
     fieldTiles.previous=fieldTiles.epoch;fieldTiles.previousStep=fieldTiles.baseStep;fieldTiles.previousFreq=fieldTiles.scene?fieldTiles.scene.omega/(2*Math.PI):freq;
   }
   fieldTiles.currentComplete=false;
+  adaptiveFields.slowSince=0;adaptiveFields.fastSince=0;
   fieldTiles.epoch++;fieldTiles.baseStep=sLength/Scale;fieldTiles.dirtyPhysics=false;fieldTiles.ready=false;fieldTiles.pending=null;fieldTiles.queue=[];fieldTiles.viewKey='';
   for(const [key,t] of fieldTiles.cache)if(t.epoch!==fieldTiles.previous)fieldTiles.cache.delete(key);
   fieldTiles.scene={kind:'scene',epoch:fieldTiles.epoch,k,omega:2*Math.PI*freq,
@@ -1408,6 +1470,8 @@ function startProcessingNewSetup(){
   fieldTiles.revision++;fieldTiles.received=0;fieldWorkerInit();fieldTiles.worker.postMessage(fieldTiles.scene);
   solvedFieldModel=captureFieldModel();
   simulate=true;processingScheduled=false;waitProcess=true;
+  // Exclude the synchronous scene solve from the next frame-time sample.
+  fieldTiles.lastFrame=0;
   lastProcessingStats={solveMs:performance.now()-begin,sources:elements.length/8,hasPEC:!!plane};
   fieldPlan(true);if(selectedComponent)renderInspector();
 }
@@ -1806,14 +1870,14 @@ const componentTypes = {
     firstHint:'Click the first endpoint', secondHint:'Click the second endpoint',
     validate:(a,b)=>length2D(a,b)>defaultDipoleSep+.01,
     invalidHint:'Choose endpoints more than 0.21 units apart',
-    create:(a,b)=>configureSource(new Dipole(c/freq,a,b,defAmp,0,thickDipole/Scale),'dipole','Dipole')
+    create:(a,b)=>configureSource(new Dipole(c/freq,a,b,DEFAULT_WIRE_FEED_VOLTAGE,0,thickDipole/Scale),'dipole','Dipole')
   },
   
   endFed: {
     name:'End-fed antenna', description:'Voltage-fed long arm + explicit short counterpoise',
     firstHint:'Click the counterpoise tip', secondHint:'Click the long-arm tip (feed near the first endpoint)',
     validate:(a,b)=>length2D(a,b)>.4, invalidHint:'Choose endpoints more than 0.4 units apart',
-    create:(a,b)=>configureSource(new EndFedAntenna(c/freq,a,b,defAmp,0),'endFed','End-fed')
+    create:(a,b)=>configureSource(new EndFedAntenna(c/freq,a,b,DEFAULT_WIRE_FEED_VOLTAGE,0),'endFed','End-fed')
   },
   linearArray: {
     name:'Linear array', description:'Center + axis · dipoles or circular loops',
@@ -1848,7 +1912,7 @@ function makeRotatingDipoleScene() {
 function makeHalfWaveDipoleScene() {
   const wavelength=c/freq,half=wavelength/4;
   const source=configureSource(new Dipole(wavelength,[0,-half],[0,half],
-    defAmp,0,thickDipole/Scale),'dipole','Dipole');
+    DEFAULT_WIRE_FEED_VOLTAGE,0,thickDipole/Scale),'dipole','Dipole');
   source.setSep(Math.min(.05,.01*wavelength));
   source.label='Half-wave dipole · center fed';
   return [source];
@@ -1885,7 +1949,7 @@ function makeYagiUdaScene() {
   const reflector=rod(-.42,.52,'Reflector · passive PEC');
   const drivenX=-.20*wavelength, drivenHalf=.24*wavelength;
   const driven=configureSource(new Dipole(wavelength,
-    [drivenX,-drivenHalf],[drivenX,drivenHalf],defAmp,0,thickDipole/Scale),
+    [drivenX,-drivenHalf],[drivenX,drivenHalf],DEFAULT_WIRE_FEED_VOLTAGE,0,thickDipole/Scale),
     'dipole','Dipole');
   driven.setSep(Math.min(.05,.012*wavelength));
   driven.label='Driven dipole · active';
@@ -2102,9 +2166,13 @@ function mountInterface() {
       <p class="muted">Set a density to zero to hide those arrows.</p>
       <label class="property">Simulation clock speed <output id="em-clock-rate-value">1×</output><input id="em-clock-rate" type="range" min="0" max="4" step="0.1" value="1"></label>
       <p class="muted">Changes animation time only; wave speed and frequency are unchanged.</p></div>
+      <div class="section"><strong>Field resolution</strong>
+      <label><input id="em-adaptive-fields" type="checkbox" checked> Enable adaptive field resolution</label>
+      <p class="muted">Optional. Refines field sampling with zoom and sustained frame rate, with hysteresis. Never uses a coarser grid than fixed mode at the same zoom and selected Low, Medium, or High resolution. Both modes share the same sample and tile safety limits. Refinement waits for camera motion to settle. Antenna currents and the PEC mesh are unchanged.</p>
+      <div class="readout"><span>Field sampling</span><output id="em-adaptive-fields-status">Adaptive</output></div></div>
       <div class="section"><strong>PEC wire solver</strong>
       <label class="property">Maximum segment length · all PEC wires <input id="em-pec-mesh" type="number" min="0.02" max="1" step="0.01" value="${pecMaxSegmentLength}"></label>
-      <div class="readout"><span>Coupled solve</span><output id="em-coupled-solve">Awaiting solve</output></div></div>
+      <div class="readout"><span>Coupled solve</span><output id="em-coupled-solve">Awaiting solve</output></div><div id="em-pec-segment-ratios"></div></div>
       <div class="section"><strong>Power diagnostics</strong><div class="readout"><span>Scene power-balance discrepancy</span><output id="em-power-balance">Updating…</output></div><p id="em-power-diagnostic-note" class="model-note"></p></div>
     </section>
     <section id="em-radiation-panel" class="floating-panel radiation-panel" hidden aria-label="Far-field radiation pattern">
@@ -2149,6 +2217,7 @@ function mountInterface() {
       displayGamma[key]=value;find('gamma-'+key).value=value;find('gamma-'+key+'-value').textContent=value;
     }
     fieldArrowDensity=1;currentArrowDensity=1;simulationClockRate=1;
+    setAdaptiveFieldResolution(true);find('adaptive-fields').checked=true;
     for(const id of ['field-arrow-density','current-arrow-density','clock-rate']){
       find(id).value=1;find(id+'-value').textContent='1×';
     }
@@ -2157,6 +2226,7 @@ function mountInterface() {
   find('field-arrow-density').oninput=e=>{fieldArrowDensity=+e.target.value;find('field-arrow-density-value').textContent=fieldArrowDensity?fieldArrowDensity+'×':'Off';};
   find('current-arrow-density').oninput=e=>{currentArrowDensity=+e.target.value;find('current-arrow-density-value').textContent=currentArrowDensity?currentArrowDensity+'×':'Off';};
   find('clock-rate').oninput=e=>{advanceSimulationClock(millis()/timeScale);simulationClockRate=+e.target.value;find('clock-rate-value').textContent=simulationClockRate?simulationClockRate+'×':'Stopped';};
+  find('adaptive-fields').onchange=e=>setAdaptiveFieldResolution(e.target.checked);
   find('pec-mesh').onchange=e=>{setPECMaxSegmentLength(e.target.valueAsNumber);e.target.value=pecMaxSegmentLength;requestFieldUpdate();if(selectedComponent)renderInspector();};
   // High is automatic only on desktop-class devices with at least 16 logical cores
   // and 8 GB reported memory. Unknown capabilities default to Medium; manual selection wins.
@@ -2193,6 +2263,7 @@ function mountInterface() {
   find('quality').onchange = e => {
     resolution = +e.target.value;
     sLength = resolution === 3 ? 2 : resolution === 2 ? 4 : 5;
+    resetAdaptiveFieldController();
     renderInspector(); requestFieldUpdate();
   };
   find('clear').onclick = () => {
@@ -2483,6 +2554,7 @@ function draw() {
   const frameNow=performance.now();
   if(fieldTiles.lastFrame){const dt=frameNow-fieldTiles.lastFrame;if(dt<250)fieldTiles.frameMs=.9*fieldTiles.frameMs+.1*dt;}
   fieldTiles.lastFrame=frameNow;
+  updateAdaptiveFieldResolution(frameNow);
   fieldSchedule();
   const now=millis()/timeScale;
   advanceSimulationClock(now);
@@ -2733,9 +2805,20 @@ function drawComponentOverlay() {
   }
   pop();
 }
+let advancedMeshStamp='';
+function updateAdvancedFieldReadouts(){
+  const status=document.getElementById('em-adaptive-fields-status');
+  if(status)status.textContent=(adaptiveFields.enabled?'Adaptive':'Fixed')+' · grid '+(sLength/Scale*2**fieldCameraLevel()).toPrecision(3);
+  const container=document.getElementById('em-pec-segment-ratios');if(!container)return;
+  const wires=antennas.filter(a=>a instanceof PassiveWire),stamp=JSON.stringify(wires.map(w=>[w.label,w.meshLength,w.wavelength]));
+  if(stamp===advancedMeshStamp)return;advancedMeshStamp=stamp;container.replaceChildren();
+  if(!wires.length){const p=document.createElement('p');p.className='muted';p.textContent='No PEC wires';container.appendChild(p);return;}
+  for(const w of wires){const row=document.createElement('div'),label=document.createElement('span'),value=document.createElement('output');row.className='readout';label.textContent=(w.label||'PEC wire')+' · segment / λ';value.textContent=(w.meshLength/w.wavelength).toFixed(4);row.append(label,value);container.appendChild(row);}
+}
 let fpsLabelUpdate=0;
 function updateStatus() {
   updateScenePowerReadouts();
+  updateAdvancedFieldReadouts();
   const solveReadout=document.getElementById('em-coupled-solve');if(solveReadout)solveReadout.textContent=fieldTiles.dirtyPhysics?'Updating…':passiveSolveInfo.message;
   // Update the readout twice per second instead of causing DOM churn at 60 FPS.
   if(performance.now()-fpsLabelUpdate>500){
