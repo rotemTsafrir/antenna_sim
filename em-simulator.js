@@ -1046,13 +1046,14 @@ function heatTransfer(value, scale) { return Math.pow(squiz(value,scale),display
 // In the solver's normalized units mu=1 and epsilon=1/c^2.
 function energyDensity(ex,ey,b) { return 0.5*((ex*ex+ey*ey)/(c*c)+b*b); }
 
-const minFreq = 0.01;
-const maxFreq = 1;
+// Frequency and wave-speed defaults/bounds scaled together by 1.25; λ is unchanged.
+const minFreq = 0.0125;
+const maxFreq = 1.25;
 let freq = 0.5 * (minFreq + maxFreq);
 
 
-const minSpeed = 1;
-const maxSpeed = 7;
+const minSpeed = 1.25;
+const maxSpeed = 8.75;
 let c = 0.8 * minSpeed + 0.2 * maxSpeed;
 let k = (2 * Math.PI * freq) / c;
 
@@ -1897,7 +1898,7 @@ function configureSource(source,type,name) {
 const exampleScenes = {
   rotating: 'Rotating dipoles · spiral waves',
   halfwave: 'Half-wave center-fed dipole',
-  yagi: 'Yagi–Uda · passive beam shaping',
+  yagi: 'Yagi–Uda · rear suppression',
   quadrupole: 'Electric quadrupole · two Hertzian dipoles'
 };
 
@@ -1934,9 +1935,23 @@ function makeElectricQuadrupoleScene() {
 
 function makeYagiUdaScene() {
   const wavelength = c / freq;
-  // Boom follows +X; each wire is parallel to Y. The reflector is longer
-  // and the directors are shorter than the voltage-fed driven dipole.
-  // This is a teaching preset, not a feed-matched or gain-optimized design.
+  // Boom follows +X; all four rods are parallel to Y. Locally optimized
+  // with this voltage-fed MoM solver at the default λ = 2.75 / 0.63125.
+  // Objective: rear-hemisphere power fraction + 0.30 * rear peak / forward
+  // power, with penalties for a displaced main beam or directivity < 4.
+  // Minimized the worse objective at shared segment lengths 0.20 and 0.04;
+  // checked intermediate meshes and 0.03. This is not an impedance match
+  // or a broadband optimum. Radii and finite feed gap remain as below.
+  const geometry = {
+    reflectorLength: 0.503881,
+    drivenLength: 0.519881,
+    director1Length: 0.459147,
+    director2Length: 0.405487,
+    reflectorSpacing: 0.211900,
+    director1Spacing: 0.100113,
+    director2Spacing: 0.307410,
+  };
+  const drivenPosition = -.20;
   const rod = (xLambda,lengthLambda,label) => {
     const x=xLambda*wavelength, half=.5*lengthLambda*wavelength;
     const wire=configureSource(new PassiveWire(wavelength,[x,-half],[x,half]),'passiveWire','PEC wire');
@@ -1946,16 +1961,41 @@ function makeYagiUdaScene() {
     wire.label=label;
     return wire;
   };
-  const reflector=rod(-.42,.52,'Reflector · passive PEC');
-  const drivenX=-.20*wavelength, drivenHalf=.24*wavelength;
+  const reflector=rod(drivenPosition-geometry.reflectorSpacing,geometry.reflectorLength,'Reflector · passive PEC');
+  const drivenX=drivenPosition*wavelength, drivenHalf=.5*geometry.drivenLength*wavelength;
   const driven=configureSource(new Dipole(wavelength,
-    [drivenX,-drivenHalf],[drivenX,drivenHalf],DEFAULT_WIRE_FEED_VOLTAGE,0,thickDipole/Scale),
+    [drivenX,-drivenHalf],[drivenX,drivenHalf],60,0,thickDipole/Scale),
     'dipole','Dipole');
   driven.setSep(Math.min(.05,.012*wavelength));
   driven.label='Driven dipole · active';
-  const director1=rod(-.04,.45,'Director 1 · passive PEC');
-  const director2=rod(.12,.44,'Director 2 · passive PEC');
+  const director1=rod(drivenPosition+geometry.director1Spacing,geometry.director1Length,'Director 1 · passive PEC');
+  const director2=rod(drivenPosition+geometry.director1Spacing+geometry.director2Spacing,geometry.director2Length,'Director 2 · passive PEC');
   return [reflector,driven,director1,director2];
+}
+
+// Scene replacement must not reuse the previous scene as a field preview.
+// Advance the epoch before cancellation so already-posted worker replies are stale.
+function clearSceneFieldCaches() {
+  fieldTiles.epoch++;
+  fieldTiles.dirtyPhysics=true;
+  fieldTiles.ready=false;
+  if(fieldTiles.worker)fieldTiles.worker.postMessage({kind:'cancel'});
+  if(fieldTiles.jobTimer!==null)clearTimeout(fieldTiles.jobTimer);
+  if(fieldTiles.viewTimer!==null)clearTimeout(fieldTiles.viewTimer);
+  fieldTiles.jobTimer=null;fieldTiles.viewTimer=null;
+  fieldTiles.pending=null;fieldTiles.queue=[];fieldTiles.cache.clear();
+  fieldTiles.scene=null;fieldTiles.previous=0;fieldTiles.previousStep=0;fieldTiles.previousFreq=0;
+  fieldTiles.currentComplete=false;fieldTiles.viewKey='';fieldTiles.progress=0;
+  fieldTiles.preview=false;fieldTiles.stalePixels=0;fieldTiles.missingPixels=0;
+  fieldTiles.received=0;fieldTiles.cacheHits=0;fieldTiles.revision++;
+  visibleFields=null;fieldImage=null;visibleStamp='';lastFramePhase=NaN;
+  EM_phase_amp_map.clear();A_map.clear();
+  resetTemporalCache();
+  radiationCache.scene=null;radiationCache.power=null;radiationCache.peak=0;radiationCache.stamp='';
+  pecSurfaceCache.epoch=-1;pecSurfaceCache.stamp='';pecSurfaceCache.samples=[];pecSurfaceCache.peak=0;
+  solvedFieldModel=null;lastProcessingStats=null;
+  sourcePowerState={valid:false,message:'Awaiting solve',values:new Map()};
+  simulate=false;waitProcess=true;
 }
 
 function loadExampleScene(key,askBeforeReplacing=true) {
@@ -1964,6 +2004,7 @@ function loadExampleScene(key,askBeforeReplacing=true) {
       !window.confirm('Replace the current scene with "'+exampleScenes[key]+'"? Current edits will be lost.')) return false;
   const factories={rotating:makeRotatingDipoleScene,yagi:makeYagiUdaScene,halfwave:makeHalfWaveDipoleScene,quadrupole:makeElectricQuadrupoleScene};
   antennas=factories[key]();
+  clearSceneFieldCaches();
   requestFieldUpdate();
   // Put the new configuration back in view even after user panning/zooming.
   zoom=1; orig=[width/2+.1,height/2+.1];
@@ -2128,8 +2169,8 @@ function mountInterface() {
         <option value="quadrupole">Electric quadrupole (2 dipoles)</option>
       </select></label>
       <label class="top-control">Field <select id="em-field"><option value="E">Electric field</option><option value="B">Magnetic field</option><option value="S">Energy flux</option><option value="U">Energy density</option></select></label>
-      <label class="top-control">Frequency <input id="em-frequency" type="number" min="${minFreq}" max="${maxFreq}" step="0.01" value="${freq}" title="Simulation frequency"></label>
-      <label class="top-control">Wave speed <input id="em-speed" type="number" min="${minSpeed}" max="${maxSpeed}" step="0.1" value="${c}" title="Simulation wave speed"></label>
+      <label class="top-control">Frequency <input id="em-frequency" type="number" min="${minFreq}" max="${maxFreq}" step="0.00625" value="${freq}" title="Simulation frequency"></label>
+      <label class="top-control">Wave speed <input id="em-speed" type="number" min="${minSpeed}" max="${maxSpeed}" step="0.125" value="${c}" title="Simulation wave speed"></label>
       <label class="top-control">Quality <select id="em-quality"><option value="1">Low</option><option value="2" selected>Medium</option><option value="3">High</option></select></label>
       <label class="top-control" title="Cache phase-indexed field heatmaps; arrows and currents remain continuous"><input id="em-temporal" type="checkbox" checked> Temporal cache</label>
       <button id="em-advanced" aria-expanded="false" aria-controls="em-advanced-panel">Advanced</button>
