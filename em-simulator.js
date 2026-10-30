@@ -485,7 +485,7 @@ class PECSlot extends Antenna {
     {key:'slotWidth',label:'Slot width · along plane trace',min:.016,max:.4,step:.004,get:()=>this.slotWidth,set:v=>{this.slotWidth=v;this.rebuild();}},
     {key:'slotAlong',label:'Position along plane',min:-30,max:30,step:.05,get:()=>this.along,set:v=>{this.along=v;this.rebuild();}}
   ];}
-  getReadouts(){return [['Length / λ',(this.length/this.wavelength).toFixed(4)],['Width',this.slotWidth.toFixed(3)],['Unknowns',String(this.meshCount-1)],['Model','Narrow-slot dual MoM · approximate']];}
+  getReadouts(){return [['Length / λ',(this.length/this.wavelength).toFixed(4)],['Width',this.slotWidth.toFixed(3)],['Unknowns',String(this.meshCount-1)],['Model',' Narrow-slot dual MoM · approximate']];}
   getNotes(){return [
     {text:'Finite slot centered on z=0; its long axis points out of the screen. The slanted opening is an illustrative projection, not a change of field-view coordinates.'},
     {text:'Triangular axial basis and cylindrical self kernel, with equivalent radius width/4. All slots and wires on both sides are solved together.'},
