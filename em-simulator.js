@@ -1,3 +1,8 @@
+/* 2026-10-30: honest frame timing, bounded heatmap warmup, cached wire geometry;
+ * finite z-directed narrow PEC slots, coupled electric/magnetic MoM on both sides.
+ * Slots use the thin-strip equivalent-radius approximation (a = width/4).
+ * See SLOT_UPDATE.md for geometry, accuracy limits, and validation results.
+ */
 /* Voltage-fed PEC antennas update (2026-10-27)
  * Center-fed: ideal peak-voltage narrow-gap source on a thin PEC rod.
  * End-fed: same source convention, with an explicit short counterpoise.
@@ -435,8 +440,8 @@ class PECPlane extends Antenna {
   getProperties(){return [];}
   getReadouts(){return [['Model','Infinite PEC plane'],['Drawn trace length',length2D(this.endPointA,this.endPointB).toFixed(3)],['Plane normal (°)',(Math.atan2(this.normal[1],this.normal[0])*180/Math.PI).toFixed(1)]];}
   getNotes(){return [{text:'The two points define an infinite, zero-thickness perfect electric conductor, perpendicular to the canvas.'},
-    {text:'Fields on each side are computed independently using mirrored electric-current images. There is no transmission through the plane. Passive PEC wires include reflected coupling in the MoM system.'},
-    {text:'The displayed arrows on the conductor trace show the induced sheet-current density in the simulation slice. In this 2D model it is tangent to the trace, and is computed from the magnetic-field jump across the two sides of the plane.'},
+    {text:'The intact screen uses electric-current images. Finite slots transmit through coupled equivalent magnetic currents; all wires and slots on both sides participate in the solve.'},
+    {text:'The displayed arrows on the conductor trace show the induced sheet-current density in the simulation slice. For the mirror-symmetric 3D sources and slots used here it is tangent to the trace, and is computed from the magnetic-field jump across the two sides of the plane.'},
     {warning:true,text:'Sources and passive wires must remain entirely on one side.'}];}
   getHitEdges(){
     const trace=planeScreenTrace(this,16);
@@ -445,11 +450,129 @@ class PECPlane extends Antenna {
   getSelectionPoints(){return [screenPoint(this.endPointA),screenPoint(this.endPointB)];}
   getDisplayEdges(){return [];}
 }
+// Finite z-directed narrow slots in the zero-thickness screen. Q=M/c is the
+// equivalent magnetic line current on the +normal side, before the image factor
+// two. Physical magnetic-current density is NOT an animated electric current.
+// A strip of width w uses the thin-strip equivalent cylindrical radius w/4.
+// This matches the wire basis/kernel family, not an exact aperture-edge model.
+class PECSlot extends Antenna {
+  constructor(wavelength,plane,p){
+    super(wavelength,1,0);this.plane=plane;
+    this.along=(p[0]-plane.endPointA[0])*plane.tangent[0]+(p[1]-plane.endPointA[1])*plane.tangent[1];
+    this.slotWidth=Math.min(.12,.04*wavelength);this.length=.45*wavelength;this.targetLength=pecMaxSegmentLength;this.rebuild();
+  }
+  center(){return this.plane.endPointA.map((v,i)=>v+this.along*this.plane.tangent[i]);}
+  rebuild(){
+    this.radius=this.slotWidth/4;
+    this.proxy=new PassiveWire(this.wavelength,[this.along,-this.length/2],[this.along,this.length/2]);
+    this.proxy.radius=this.radius;this.proxy.targetLength=this.targetLength;this.proxy.rebuild();
+    this.meshCount=this.proxy.meshCount;this.meshLength=this.proxy.meshLength;
+    this.farSamples=null;this.coefficients=Array.from({length:this.meshCount+1},()=>[0,0]);
+    this.segments=[];this.segmentLengths=new Float64Array(0);this.currentSegments=[];
+    this.refreshMagnetic();
+  }
+  setDl(){}
+  setWavelength(v){this.wavelength=v;if(this.proxy)this.proxy.wavelength=v;this.farSamples=null;}
+  refreshMagnetic(){
+    const p=this.center();
+    this.magnetic=this.proxy.samples.map(q=>{
+      const a=this.coefficients[q.e],b=this.coefficients[q.e+1];
+      return [p[0],p[1],q.p[1],q.weight*((1-q.u)*a[0]+q.u*b[0]),q.weight*((1-q.u)*a[1]+q.u*b[1]),this.radius];
+    });
+  }
+  getProperties(){return [
+    {key:'slotLength',label:'Slot length · perpendicular to screen',min:.2,max:12,step:.02,get:()=>this.length,set:v=>{this.length=v;this.rebuild();}},
+    {key:'slotWidth',label:'Slot width · along plane trace',min:.016,max:.4,step:.004,get:()=>this.slotWidth,set:v=>{this.slotWidth=v;this.rebuild();}},
+    {key:'slotAlong',label:'Position along plane',min:-30,max:30,step:.05,get:()=>this.along,set:v=>{this.along=v;this.rebuild();}}
+  ];}
+  getReadouts(){return [['Length / λ',(this.length/this.wavelength).toFixed(4)],['Width',this.slotWidth.toFixed(3)],['Unknowns',String(this.meshCount-1)],['Model','Narrow-slot dual MoM · approximate']];}
+  getNotes(){return [
+    {text:'Finite slot centered on z=0; its long axis points out of the screen. The slanted opening is an illustrative projection, not a change of field-view coordinates.'},
+    {text:'Triangular axial basis and cylindrical self kernel, with equivalent radius width/4. All slots and wires on both sides are solved together.'},
+    {warning:true,text:'Thin-slot approximation: fields within about one slot width of the aperture and sharp edges are not quantitatively resolved. Use width much smaller than length and wavelength. The screen has zero physical thickness.'},
+    ...(this.slotWidth>this.length/10||this.slotWidth>this.wavelength/20?[{warning:true,text:'This slot is too wide for the narrow-slot approximation; reduce width.'}]:[]),
+    ...(passiveSolveInfo.error?[{warning:true,text:passiveSolveInfo.message}]:[])
+  ];}
+  getHitEdges(){const g=slotGlyph(this);return [{a:g.a,b:g.b,width:g.w}];}
+  getSelectionPoints(){return [screenPoint(this.center())];}
+}
+function currentPECSlots(){return antennas.filter(a=>a instanceof PECSlot);}
+function slotModelKey(){return currentPECSlots().map(s=>[s.along,s.length,s.slotWidth,s.meshCount]);}
+function slotAtTrace(plane,x,y,padding=0){
+  const along=(x-plane.endPointA[0])*plane.tangent[0]+(y-plane.endPointA[1])*plane.tangent[1];
+  return antennas.some(s=>s instanceof PECSlot&&s.plane===plane&&Math.abs(along-s.along)<s.slotWidth/2+padding);
+}
+function slotGeometryError(plane,components){
+  const slots=components.filter(s=>s instanceof PECSlot);
+  for(let i=0;i<slots.length;i++){
+    const s=slots[i];if(!plane||s.plane!==plane)return 'A slot must belong to the existing PEC plane';
+    if(s.length<4*s.slotWidth)return 'Slot length must be at least four times its width';
+    for(let j=0;j<i;j++)if(Math.abs(s.along-slots[j].along)<=(s.slotWidth+slots[j].slotWidth)/2)return 'Slots overlap or touch; separate their openings';
+  }
+  return null;
+}
+// Dual electric-current kernel for a z-directed magnetic source. Same exp(+iwt)
+// convention and reduced-radius field kernel as electric display elements.
+function addSlotElementField(out,x,y,e,side,z=0){
+  const dx=x-e[0],dy=y-e[1],dz=z-e[2],g=greenData(dx,dy,e[5],dz),qre=2*side*e[3],qim=2*side*e[4];
+  const hr=g[2]*qre-g[3]*qim,hi=g[2]*qim+g[3]*qre;
+  out[0]-=c*dy*hr;out[1]-=c*dy*hi;out[2]+=c*dx*hr;out[3]+=c*dx*hi;
+  const tr=g[0]+(g[2]+g[4]*dz*dz)/(k*k),ti=g[1]+(g[3]+g[5]*dz*dz)/(k*k),w=2*Math.PI*freq/c;
+  out[4]+=w*(tr*qim+ti*qre);out[5]-=w*(tr*qre-ti*qim);
+}
+function addAllSlotFields(out,x,y,side,z=0){for(const s of currentPECSlots())for(const e of s.magnetic)addSlotElementField(out,x,y,e,side,z);}
+// Mixed electric/magnetic reaction: test the full curl kernel, not the electric
+// EFIE Hessian. A reduced radius is consistent with the excitation/display path.
+// Reciprocity supplies the transpose block with the slot row scaled by -c.
+function momWireSlotBlock(w,s){
+  const a=momTestSamples(w,Math.min(w.meshLength,c/freq/12),4),b=momTestSamples(s.proxy,Math.min(s.meshLength,c/freq/12),4);
+  const n=w.meshCount-1,m=s.meshCount-1,re=new Float64Array(n*m),im=new Float64Array(n*m),center=s.center(),side=s.plane.side(w.endPointA);
+  for(const x of a)for(const y of b){
+    const dx=x.p[0]-center[0],dy=x.p[1]-center[1],g=greenData(dx,dy,Math.hypot(w.radius,s.radius),y.p[1]);
+    const v=2*side*c*(-dy*w.tangent[0]+dx*w.tangent[1])*x.weight*y.weight;
+    for(const [i,fi] of x.hats)for(const [j,fj] of y.hats){const q=i*m+j;re[q]+=v*fi*fj*g[2];im[q]+=v*fi*fj*g[3];}
+  }
+  return {rows:n,cols:m,re,im};
+}
+function momAssemble(wires){
+  const base=momAssembleWires(wires),slots=currentPECSlots();if(!slots.length)return base;
+  let n=base.n;for(const s of slots){s.solveOffset=n;n+=s.meshCount-1;}
+  if(n>MAX_PASSIVE_UNKNOWNS)throw Error('Limit '+MAX_PASSIVE_UNKNOWNS+' coupled wire/slot unknowns; increase segment length');
+  const ar=new Float64Array(n*n),ai=new Float64Array(n*n);
+  for(let i=0;i<base.n;i++)for(let j=0;j<base.n;j++){ar[i*n+j]=base.ar[i*base.n+j];ai[i*n+j]=base.ai[i*base.n+j];}
+  function insert(block,a,b,factor){for(let i=0;i<block.rows;i++)for(let j=0;j<block.cols;j++){
+    const q=i*block.cols+j,row=a.solveOffset+i,col=b.solveOffset+j;
+    ar[row*n+col]=factor*block.re[q];ai[row*n+col]=factor*block.im[q];
+    if(a!==b){ar[col*n+row]=ar[row*n+col];ai[col*n+row]=ai[row*n+col];}
+  }}
+  // H+ - H- = 0, multiplied by -c. Two half-spaces, each with image factor 2.
+  for(let a=0;a<slots.length;a++)for(let b=a;b<slots.length;b++)insert(a===b?momSelfBlock(slots[a].proxy):momMutualBlock(slots[a].proxy,slots[b].proxy),slots[a],slots[b],-4);
+  for(const w of wires)for(const s of slots)insert(momWireSlotBlock(w,s),w,s,1);
+  return {ar,ai,n};
+}
+function momExcitation(wires){
+  const base=momExcitationWires(wires),slots=currentPECSlots();if(!slots.length)return base;
+  const n=base.br.length+slots.reduce((v,s)=>v+s.meshCount-1,0),br=new Float64Array(n),bi=new Float64Array(n);br.set(base.br);bi.set(base.bi);
+  const active=antennas.filter(a=>!(a instanceof PassiveWire)&&!(a instanceof PECPlane)&&!(a instanceof PECSlot));
+  for(const s of slots){const p=s.center();for(const q of momTestSamples(s.proxy,Math.min(s.meshLength,c/freq/12),8)){
+    let rr=0,ii=0;
+    for(const a of active)for(let j=0;j<a.segments.length;j++){
+      const src=a.segments[j],v=a.currentSegments[j],d=a.I0,L=a.segmentLengths[j],dx=p[0]-src[0],dy=p[1]-src[1],g=greenData(dx,dy,sourceRadius(a),q.p[1]);
+      const jr=L*(v[0]*d.a-v[2]*d.b),ji=L*(v[0]*d.b+v[2]*d.a),yr=L*(v[1]*d.a-v[3]*d.b),yi=L*(v[1]*d.b+v[3]*d.a);
+      const cr=dx*yr-dy*jr,ci=dx*yi-dy*ji,factor=2*c*s.plane.side(src);
+      rr+=factor*(g[2]*cr-g[3]*ci);ii+=factor*(g[2]*ci+g[3]*cr);
+    }
+    for(const [i,f] of q.hats){br[s.solveOffset+i]+=q.weight*f*rr;bi[s.solveOffset+i]+=q.weight*f*ii;}
+  }}
+  return {br,bi};
+}
+
 function currentPECPlane(){return antennas.find(a=>a instanceof PECPlane)||null;}
 function planeGeometryError(plane,components){
+  const slotError=slotGeometryError(plane,components);if(slotError)return slotError;
   if(!plane)return null;
   for(const a of components){
-    if(a instanceof PECPlane)continue;
+    if(a instanceof PECPlane||a instanceof PECSlot)continue;
     let points=[],clearance=1e-5;
     if(a instanceof PassiveWire){points=[a.endPointA,a.endPointB];clearance=a.radius*1.001;}
     else if(a instanceof Dipole){points=[a.endPointA,a.endPointB];}
@@ -632,7 +755,7 @@ function momMutualBlock(a,b){
   }
   map.set(b,{key,block});momLastStats.pairBuilds++;return block;
 }
-function momAssemble(wires){
+function momAssembleWires(wires){
   let n=0;for(const w of wires){w.solveOffset=n;n+=w.meshCount-1;}
   if(n>MAX_PASSIVE_UNKNOWNS)throw Error('Limit '+MAX_PASSIVE_UNKNOWNS+' wire-current unknowns; increase segment length or remove wires');
   const ar=new Float64Array(n*n),ai=new Float64Array(n*n);
@@ -655,9 +778,9 @@ function momAssemble(wires){
   }
   return {ar,ai,n};
 }
-function momExcitation(wires){
+function momExcitationWires(wires){
   const n=wires.reduce((sum,w)=>sum+w.meshCount-1,0),br=new Float64Array(n),bi=new Float64Array(n);
-  const active=antennas.filter(a=>!(a instanceof PassiveWire)&&!(a instanceof PECPlane)),out=new Float64Array(6);
+  const active=antennas.filter(a=>!(a instanceof PassiveWire)&&!(a instanceof PECPlane)&&!(a instanceof PECSlot)),out=new Float64Array(6);
   const plane=currentPECPlane();
   for(const w of wires){
     let map=momExcitationCache.get(w);if(!map){map=new WeakMap();momExcitationCache.set(w,map);}
@@ -742,21 +865,23 @@ function solveComplex(ar,ai,br,bi,n){return solveFactoredComplex(factorComplex(a
 function solvePassiveWires(){
   const wires=antennas.filter(a=>a instanceof PassiveWire),plane=currentPECPlane(),sig=antennas.map(a=>[a,a.segments,a instanceof PassiveWire?null:a.currentSegments,a.I0.a,a.I0.b,a.amp,a.phase,a instanceof Dipole?a.feedFraction:null,a instanceof Dipole?a.feedSeparation():null,a instanceof Dipole?a.feedMode:null,sourceRadius(a),a instanceof PECPlane?[...a.endPointA,...a.endPointB].join(','):null]);
   if(passiveSignature&&passiveSignature.k===k&&passiveSignature.freq===freq&&sig.length===passiveSignature.sig.length&&sig.every((v,i)=>v.every((x,j)=>x===passiveSignature.sig[i][j])))return;
-  passiveSignature=null;passiveSolveInfo={message:wires.length?'Solving…':'No PEC wires',error:false};
-  if(!wires.length){momMatrixCache=null;return;}
+  passiveSignature=null;passiveSolveInfo={message:wires.length?'Solving…':'No PEC wires or slots',error:false};
+  const slots=currentPECSlots();
+  if(!wires.length&&!slots.length){momMatrixCache=null;return;}
   momLastStats={selfHits:0,selfBuilds:0,pairHits:0,pairBuilds:0,factorReused:false};const begin=performance.now();
   try{
-    const key=JSON.stringify([k,freq,wires.map(w=>[momWireKey(w),w instanceof Dipole&&w.feedMode==='open'?[w.feedFraction,w.feedSeparation()]:null]),plane?[plane.endPointA,plane.endPointB]:null]);let matrix;
-    if(momMatrixCache&&momMatrixCache.key===key){matrix=momMatrixCache;let offset=0;for(const w of wires){w.solveOffset=offset;offset+=w.meshCount-1;}momLastStats.factorReused=true;}
+    const key=JSON.stringify([k,freq,slotModelKey(),wires.map(w=>[momWireKey(w),w instanceof Dipole&&w.feedMode==='open'?[w.feedFraction,w.feedSeparation()]:null]),plane?[plane.endPointA,plane.endPointB]:null]);let matrix;
+    if(momMatrixCache&&momMatrixCache.key===key){matrix=momMatrixCache;let offset=0;for(const w of wires){w.solveOffset=offset;offset+=w.meshCount-1;}for(const s of slots){s.solveOffset=offset;offset+=s.meshCount-1;}momLastStats.factorReused=true;}
     else{matrix=momPortSystem(wires);matrix.lu=factorComplex(matrix.ar,matrix.ai,matrix.n);matrix.key=key;momMatrixCache=matrix;}
     const {ar,ai,n}=matrix,{br,bi}=momPortExcitation(wires,n),[xr,xi]=solveFactoredComplex(matrix.lu,br,bi);
     let err=0,norm=0;for(let i=0;i<n;i++){let rr=-br[i],ii=-bi[i];for(let j=0;j<n;j++){rr+=ar[i*n+j]*xr[j]-ai[i*n+j]*xi[j];ii+=ar[i*n+j]*xi[j]+ai[i*n+j]*xr[j];}err+=rr*rr+ii*ii;norm+=br[i]*br[i]+bi[i]*bi[i];}
     const residual=Math.sqrt(err/Math.max(norm,1e-300));if(!Number.isFinite(residual)||residual>1e-7)throw Error('Passive solve failed residual check');
     for(const w of wires){w.nodeCurrents=Array.from({length:w.meshCount+1},()=>new Float64Array(4));for(let i=1;i<w.meshCount;i++){const j=w.solveOffset+i-1,t=w.tangent;w.nodeCurrents[i]=new Float64Array([t[0]*xr[j],t[1]*xr[j],t[0]*xi[j],t[1]*xi[j]]);}w.refreshCurrents();}
+    for(const s of slots){s.coefficients=Array.from({length:s.meshCount+1},(_,i)=>i===0||i===s.meshCount?[0,0]:[xr[s.solveOffset+i-1],xi[s.solveOffset+i-1]]);s.refreshMagnetic();}
     wires.filter(w=>w instanceof Dipole&&w.feedMode==='open').forEach((w,q)=>{w.openVoltage=[xr[matrix.wireUnknowns+q],xi[matrix.wireUnknowns+q]];});
     passiveSignature={k,freq,sig};momLastStats.elapsedMs=performance.now()-begin;
-    passiveSolveInfo={message:n+' unknowns · cylindrical kernel',error:false,residual,count:n};
-  }catch(e){for(const w of wires){if(w instanceof Dipole)w.openVoltage=[0,0];w.nodeCurrents=Array.from({length:w.meshCount+1},()=>new Float64Array(4));w.refreshCurrents();}passiveSolveInfo={message:e.message+' (PEC wire fields and power readouts disabled)',error:true};}
+    passiveSolveInfo={message:n+' unknowns · cylindrical kernel'+(slots.length?' · narrow-slot approximation':''),error:false,residual,count:n};
+  }catch(e){for(const s of slots){s.coefficients=Array.from({length:s.meshCount+1},()=>[0,0]);s.refreshMagnetic();}for(const w of wires){if(w instanceof Dipole)w.openVoltage=[0,0];w.nodeCurrents=Array.from({length:w.meshCount+1},()=>new Float64Array(4));w.refreshCurrents();}passiveSolveInfo={message:e.message+' (PEC wire fields and power readouts disabled)',error:true};}
 }
 
 
@@ -800,16 +925,31 @@ function powerFarAmplitude(elements,nx,ny,plane,side,images){
 function powerTransverseDot(f,g,nx,ny){
   return f.reduce((s,v,i)=>s+v*g[i],0)-(nx*f[0]+ny*f[1])*(nx*g[0]+ny*g[1])-(nx*f[2]+ny*f[3])*(nx*g[2]+ny*g[3]);
 }
+function slotFarAmplitude(slots,nx,ny,nz,side){
+  const f=[0,0,0,0];
+  for(const s of slots){const p=s.center();let re=0,im=0;
+    // Radiation quadrature need not use the radius-scale near-field samples.
+    for(const q of (s.farSamples||(s.farSamples=momTestSamples(s.proxy,Math.min(s.meshLength,c/freq/12))))){
+      let qr=0,qi=0;for(const [i,v] of q.hats){qr+=v*s.coefficients[i+1][0];qi+=v*s.coefficients[i+1][1];}
+      const phase=k*(nx*p[0]+ny*p[1]+nz*q.p[1]),co=Math.cos(phase),si=Math.sin(phase),L=2*side*q.weight;
+      re+=L*(qr*co-qi*si);im+=L*(qr*si+qi*co);
+    }
+    f[0]-=ny*re;f[1]+=nx*re;f[2]-=ny*im;f[3]+=nx*im;
+  }
+  return f;
+}
 function updateSourcePowers(){
   sourcePowerState={valid:false,message:passiveSolveInfo.error?passiveSolveInfo.message:'Awaiting solve',values:new Map()};
   if(passiveSolveInfo.error)return;
-  const bodies=antennas.filter(a=>!(a instanceof PECPlane)),plane=currentPECPlane();
+  const bodies=antennas.filter(a=>!(a instanceof PECPlane)&&!(a instanceof PECSlot)),plane=currentPECPlane();
+  const slots=currentPECSlots();
   const lists=bodies.map(powerElements),values=new Map(bodies.map(a=>[a,{net:0,radiation:0,freeSelf:0}]));
   const points=lists.flat().map(e=>e.p);
   let span=0;if(points.length){let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;for(const p of points){xmin=Math.min(xmin,p[0]);xmax=Math.max(xmax,p[0]);ymin=Math.min(ymin,p[1]);ymax=Math.max(ymax,p[1]);}span=Math.hypot(xmax-xmin,ymax-ymin);}
   // Polar axis normal to a PEC plane places its half-space discontinuity on
   // quadrature boundaries. Include image separation in the angular bandwidth.
   if(plane)for(const p of points)span=Math.max(span,2*Math.abs(plane.signedDistance(p)));
+  for(const s of slots)span=Math.max(span,s.length);
   const required=Math.max(12,Math.ceil(k*span+12)),order=Math.min(64,required),gauss=powerGauss(order),phiCount=2*order;
   let totalRadiated=0;
   const coeff=(2*Math.PI*freq)**2/(8*Math.PI*c);
@@ -821,6 +961,7 @@ function updateSourcePowers(){
       const ny=plane?z*plane.normal[1]+r*Math.cos(phi)*plane.tangent[1]:r*Math.sin(phi);
       const fs=lists.map(e=>powerFarAmplitude(e,nx,ny,plane,half,true)),total=[0,0,0,0];
       for(const f of fs)for(let d=0;d<4;d++)total[d]+=f[d];
+      if(slots.length){const sf=slotFarAmplitude(slots,nx,ny,r*Math.sin(phi),half);for(let d=0;d<4;d++)total[d]+=sf[d];}
       totalRadiated+=weight*powerTransverseDot(total,total,nx,ny);
       bodies.forEach((a,i)=>{
         const v=values.get(a);v.radiation+=weight*powerTransverseDot(fs[i],total,nx,ny);
@@ -851,6 +992,7 @@ function updateSourcePowers(){
         if(j!==i)addElementField(field,target.p[0],target.p[1],e.p,e.j,directRadius);
         if(plane)addElementField(field,target.p[0],target.p[1],plane.mirrorPoint(e.p),plane.mirrorCurrent(e.j),radius);
       }
+      if(slots.length)addAllSlotFields(field,target.p[0],target.p[1],plane.side(target.p));
       v.net-=.5*(target.j[0]*field[0]+target.j[2]*field[1]+target.j[1]*field[2]+target.j[3]*field[3]);
     }
   }
@@ -859,14 +1001,14 @@ function updateSourcePowers(){
   sourcePowerState={valid:true,values,totalRadiated,totalSupplied,balanceError:Math.abs(totalSupplied-totalRadiated)/scale,angularLimited:required>order};
 }
 function sourcePowerReadouts(a){
-  if(a instanceof PECPlane||(a instanceof PassiveWire&&!(a instanceof Dipole)))return [];
+  if(a instanceof PECPlane||a instanceof PECSlot||(a instanceof PassiveWire&&!(a instanceof Dipole)))return [];
   const unavailable=fieldTiles.dirtyPhysics||passiveSolveInfo.error||!sourcePowerState.valid,v=sourcePowerState.values.get(a);
   const value=unavailable||!v?(passiveSolveInfo.error?'Unavailable':'Updating…'):formatAveragePower(v.net);
   return [['Average power contribution',value]];
 }
 function formatAveragePower(x){return Math.abs(x)<1e-12?'0':(x>0?'+':'')+x.toPrecision(5);}
 function sourcePowerNotes(a){
-  if(a instanceof PECPlane||(a instanceof PassiveWire&&!(a instanceof Dipole)))return [];
+  if(a instanceof PECPlane||a instanceof PECSlot||(a instanceof PassiveWire&&!(a instanceof Dipole)))return [];
   return [{text:'Average power contribution: positive supplies net power to the electromagnetic field; negative absorbs net power into the source. Values are in simulation units, not watts.'}];
 }
 function updateScenePowerReadouts(){
@@ -1038,7 +1180,7 @@ let fieldArrowDensity=1,currentArrowDensity=1,simulationClockRate=1,pecMaxSegmen
 function setPECMaxSegmentLength(v){
   if(!Number.isFinite(v))return;
   pecMaxSegmentLength=Math.max(.02,Math.min(1,v));
-  for(const a of antennas)if(a instanceof PassiveWire){a.targetLength=pecMaxSegmentLength;a.rebuild();}
+  for(const a of antennas)if(a instanceof PassiveWire||a instanceof PECSlot){a.targetLength=pecMaxSegmentLength;a.rebuild();}
 }
 function advanceSimulationClock(now){if(!pause&&simulate)timeSim+=(now-time)*simulationClockRate;time=now;}
 
@@ -1221,6 +1363,17 @@ function fieldWorkerMain(scope) {
         eyr+=omega*(tr*iy+ti*jy+dy*ui);eyi-=omega*(tr*jy-ti*iy+dy*ur);
         const crossr=dx*jy-dy*jx,crossi=dx*iy-dy*ix;br+=hr*crossr-hi*crossi;bi+=hr*crossi+hi*crossr;
       }
+      const magnetic=scene.magnetic;
+      if(magnetic)for(let n=0;n<magnetic.length;n+=6){
+        const dx=x-magnetic[n],dy=y-magnetic[n+1],dz=-magnetic[n+2],R=Math.hypot(dx,dy,dz,magnetic[n+5]),iv=1/R,kr=scene.k*R;
+        const gr=Math.cos(kr)*iv,gi=-Math.sin(kr)*iv;
+        const hr=-gr*iv*iv+scene.k*gi*iv,hi=-gi*iv*iv-scene.k*gr*iv;
+        const qr=(3*iv*iv-kk)*gr*iv*iv-3*scene.k*gi*iv*iv*iv,qi=(3*iv*iv-kk)*gi*iv*iv+3*scene.k*gr*iv*iv*iv;
+        const mr=2*side*magnetic[n+3],mi=2*side*magnetic[n+4],vr=hr*mr-hi*mi,vi=hr*mi+hi*mr;
+        exr-=scene.c*dy*vr;exi-=scene.c*dy*vi;eyr+=scene.c*dx*vr;eyi+=scene.c*dx*vi;
+        const tr=gr+(hr+qr*dz*dz)/kk,ti=gi+(hi+qi*dz*dz)/kk;
+        br+=omega/scene.c*(tr*mi+ti*mr);bi-=omega/scene.c*(tr*mr-ti*mi);
+      }
       j.data.set([exr,exi,eyr,eyi,br,bi],j.index*6);j.index++;
     }while(j.index<1089&&performance.now()<deadline);
     if(job!==j)return;
@@ -1332,7 +1485,12 @@ function fieldWorkerMessage(m){
   if(m.kind!=='tile'||!fieldTiles.pending||m.id!==fieldTiles.pending.id)return;
   fieldTiles.pending=null;
   const key=fieldTileKey(m.epoch,m.level,m.tx,m.ty);
-  fieldTiles.cache.set(key,{...m,lastUsed:++fieldTiles.clock});fieldTiles.revision++;fieldTiles.received++;
+  fieldTiles.cache.set(key,{...m,lastUsed:++fieldTiles.clock});
+  // Only arrivals overlapping the sampled viewport can change visible phasors.
+  const view=gridView(),step=sLength/Scale*2**fieldCameraLevel(),ts=fieldTiles.baseStep*2**m.level;
+  const xmin=view.x0*step,xmax=(view.x0+view.cols-1)*step,ymax=view.y0*step,ymin=(view.y0-view.rows+1)*step;
+  if((m.tx+1)*32*ts>=xmin&&m.tx*32*ts<=xmax&&(m.ty+1)*32*ts>=ymin&&m.ty*32*ts<=ymax)fieldTiles.revision++;
+  fieldTiles.received++;
   fieldEvict();fieldPlan(false);fieldSchedule();
 }
 function fieldEvict(){
@@ -1444,7 +1602,7 @@ function startProcessingNewSetup(){
   updateSourcePowers();
   const elements=[];
   for(const a of antennas){
-    if(a instanceof PECPlane)continue;
+    if(a instanceof PECPlane||a instanceof PECSlot)continue;
     const drive=a.I0;
     for(let i=0;i<a.segments.length;i++){
       const v=a.currentSegments[i],L=a.segmentLengths[i],jr=L*(v[0]*drive.a-v[2]*drive.b),yr=L*(v[1]*drive.a-v[3]*drive.b),ji=L*(v[0]*drive.b+v[2]*drive.a),yi=L*(v[1]*drive.b+v[3]*drive.a);
@@ -1467,11 +1625,12 @@ function startProcessingNewSetup(){
   for(const [key,t] of fieldTiles.cache)if(t.epoch!==fieldTiles.previous)fieldTiles.cache.delete(key);
   fieldTiles.scene={kind:'scene',epoch:fieldTiles.epoch,k,omega:2*Math.PI*freq,
     plane:plane?{x:plane.endPointA[0],y:plane.endPointA[1],nx:plane.normal[0],ny:plane.normal[1]}:null,
-    elements:new Float64Array(elements)};
+    elements:new Float64Array(elements),magnetic:new Float64Array(currentPECSlots().flatMap(s=>s.magnetic.flat())),c};
   fieldTiles.revision++;fieldTiles.received=0;fieldWorkerInit();fieldTiles.worker.postMessage(fieldTiles.scene);
   solvedFieldModel=captureFieldModel();
   simulate=true;processingScheduled=false;waitProcess=true;
-  // Exclude the synchronous scene solve from the next frame-time sample.
+  // Only reset the adaptive work-budget estimator. The independent frameTiming
+  // clock is never reset by a solve, so reported FPS includes this stall.
   fieldTiles.lastFrame=0;
   lastProcessingStats={solveMs:performance.now()-begin,sources:elements.length/8,hasPEC:!!plane};
   fieldPlan(true);if(selectedComponent)renderInspector();
@@ -1562,7 +1721,7 @@ function sampleArrowField(f, screenX, screenY, ct, st, oldCos, oldSin, out) {
 // Adjacent cached phases are alpha-blended to avoid quantization judder.
 const temporalCache={enabled:true,key:'',frames:[],count:0,hits:0,misses:0,
   rasterMs:0,cacheMs:0,rasterCount:0,drawCount:0,reason:'Warming up'};
-function resetTemporalCache(){temporalCache.key='';temporalCache.frames=[];temporalCache.count=0;
+function resetTemporalCache(){if(temporalCache.timer)clearTimeout(temporalCache.timer);temporalCache.timer=null;temporalCache.job=null;temporalCache.cursor=0;temporalCache.key='';temporalCache.frames=[];temporalCache.count=0;
   temporalCache.hits=0;temporalCache.misses=0;temporalCache.rasterMs=0;
   temporalCache.cacheMs=0;temporalCache.rasterCount=0;temporalCache.drawCount=0;
 }
@@ -1578,11 +1737,11 @@ function updateTemporalCacheConfig(f){
   if(temporalCache.key!==key){resetTemporalCache();temporalCache.key=key;temporalCache.count=count;temporalCache.frames=new Array(count);}
   return count;
 }
-function paintFieldImage(f,ct,st,target) {
+function paintFieldImage(f,ct,st,target,rowStart=0,rowEnd=f.rows,commit=true) {
     const fieldPixels = target.pixels;
     const oldCos=Math.cos(timeSim*2*Math.PI*f.previousFreq),oldSin=Math.sin(timeSim*2*Math.PI*f.previousFreq);
 
-    for (let j = 0; j < f.rows; j++) {
+    for (let j = rowStart; j < rowEnd; j++) {
       for (let i = 0; i < f.cols; i++) {
         const idx = j * f.cols + i;
         const pc=f.stale[idx]?oldCos:ct,ps=f.stale[idx]?oldSin:st;
@@ -1701,7 +1860,7 @@ function paintFieldImage(f,ct,st,target) {
         fieldPixels[pixelIndex + 3] = 255;
       }
     }
-    target.updatePixels();
+    if(commit)target.updatePixels();
 }
 function cachedHeatmap(f) {
   if(!temporalCache.enabled){temporalCache.reason='Off';return null;}
@@ -1713,19 +1872,41 @@ function cachedHeatmap(f) {
   const theta=timeSim*fieldTiles.scene.omega;
   const position=((theta/(2*Math.PI))%1+1)%1*count;
   const lo=Math.floor(position),hi=(lo+1)%count,alpha=position-lo;
-  const wanted=alpha<.001?[lo]:[lo,hi];
-  const t0=performance.now();let rendered=0;
-  for(const i of wanted){
-    if(temporalCache.frames[i]){temporalCache.hits++;continue;}
-    const phase=2*Math.PI*i/count;
-    const bitmap=createImage(f.cols,f.rows);bitmap.loadPixels();
-    const began=performance.now();paintFieldImage(f,Math.cos(phase),Math.sin(phase),bitmap);
-    temporalCache.rasterMs+=performance.now()-began;temporalCache.rasterCount++;
-    temporalCache.frames[i]=bitmap;temporalCache.misses++;rendered++;
+  queueTemporalWarmup(f,lo);
+  const first=temporalCache.frames[lo],second=temporalCache.frames[hi];
+  if(first&&(alpha<.001||second)){
+    temporalCache.hits++;temporalCache.reason='Active';return [first,second,alpha];
   }
-  temporalCache.cacheMs+=performance.now()-t0;temporalCache.drawCount++;
-  temporalCache.reason='Active';
-  return [temporalCache.frames[lo],temporalCache.frames[hi],alpha];
+  temporalCache.misses++;temporalCache.reason='Warming up';
+  // At most the ordinary live raster is generated in the animation callback.
+  return null;
+}
+function queueTemporalWarmup(f,preferred){
+  if(temporalCache.timer||document.hidden)return;
+  const key=temporalCache.key;
+  temporalCache.timer=setTimeout(()=>{
+    temporalCache.timer=null;
+    if(key!==temporalCache.key||f!==visibleFields||fieldTiles.dirtyPhysics||waitProcess||fieldTiles.preview||fieldTiles.stalePixels||fieldTiles.missingPixels||pointerGesture||!temporalCache.enabled)return;
+    let job=temporalCache.job;
+    if(!job){
+      let index=preferred;
+      if(temporalCache.frames[index]){
+        index=temporalCache.cursor||0;
+        while(index<temporalCache.count&&temporalCache.frames[index])index++;
+        temporalCache.cursor=index;
+      }
+      if(index>=temporalCache.count)return;
+      const bitmap=createImage(f.cols,f.rows);bitmap.loadPixels();
+      const phase=2*Math.PI*index/temporalCache.count;
+      job=temporalCache.job={index,bitmap,row:0,ct:Math.cos(phase),st:Math.sin(phase)};
+    }
+    const start=performance.now();
+    do{const end=Math.min(f.rows,job.row+2);paintFieldImage(f,job.ct,job.st,job.bitmap,job.row,end,false);job.row=end;}
+    while(job.row<f.rows&&performance.now()-start<1.5);
+    temporalCache.rasterMs+=performance.now()-start;
+    if(job.row===f.rows){job.bitmap.updatePixels();temporalCache.frames[job.index]=job.bitmap;temporalCache.job=null;temporalCache.rasterCount++;}
+    // One bounded job between frames; subsequent frames schedule more work.
+  },0);
 }
 
 function renderFields() {
@@ -1853,19 +2034,7 @@ const componentTypes = {
     firstHint:'Click the loop center; adjust radius in Properties',
     create:a=>configureSource(new SmallLoop(c/freq,a,.08*(c/freq)/(2*Math.PI),100*defAmp,0),'smallLoop','Loop')
   },
-  pecPlane: {
-    name:'Infinite PEC plane', description:'Two points define its trace · image method on both sides · one plane only',
-    firstHint:'Click the first point on the infinite PEC plane', secondHint:'Click another point to set its direction',
-    validate:(a,b)=>length2D(a,b)>.08&&!currentPECPlane()&&!planeGeometryError(new PECPlane(c/freq,a,b),antennas),
-    invalidHint:'Plane already present, too short, or intersects an existing component',
-    create:(a,b)=>configureSource(new PECPlane(c/freq,a,b),'pecPlane','PEC plane')
-  },
-  passiveWire: {
-    name:'Passive PEC wire', description:'Two endpoints · coupled induced currents',
-    firstHint:'Click the first wire endpoint', secondHint:'Click the second wire endpoint',
-    validate:(a,b)=>length2D(a,b)>=.08, invalidHint:'Wire must be at least 0.08 units long',
-    create:(a,b)=>configureSource(new PassiveWire(c/freq,a,b),'passiveWire','PEC wire')
-  },
+
   dipole: {
     name:'Center-fed dipole', description:'Thin PEC body · prescribed feed voltage',
     firstHint:'Click the first endpoint', secondHint:'Click the second endpoint',
@@ -1885,6 +2054,24 @@ const componentTypes = {
     firstHint:'Click the array center', secondHint:'Click to set the positive array axis',
     validate:(a,b)=>length2D(a,b)>.001, invalidHint:'Choose a different point to set the axis',
     create:(a,b)=>configureSource(new LinearArray(c/freq,a,Math.atan2(b[1]-a[1],b[0]-a[0])),'linearArray','Array')
+  },
+  pecPlane: {
+    name:'Infinite PEC plane', description:'Two points define its trace · image method on both sides · one plane only',
+    firstHint:'Click the first point on the infinite PEC plane', secondHint:'Click another point to set its direction',
+    validate:(a,b)=>length2D(a,b)>.08&&!currentPECPlane()&&!planeGeometryError(new PECPlane(c/freq,a,b),antennas),
+    invalidHint:'Plane already present, too short, or intersects an existing component',
+    create:(a,b)=>configureSource(new PECPlane(c/freq,a,b),'pecPlane','PEC plane')
+  },
+  pecSlot: {
+    name:'Slot in PEC plane',description:'Click the plane · finite z-length and opening width',oneClick:true,
+    firstHint:'Click the PEC plane to poke a finite slot; adjust length and width in Properties',
+    create:p=>configureSource(new PECSlot(c/freq,currentPECPlane(),p),'pecSlot','PEC slot')
+  },
+  passiveWire: {
+    name:'Passive PEC wire', description:'Two endpoints · coupled induced currents',
+    firstHint:'Click the first wire endpoint', secondHint:'Click the second wire endpoint',
+    validate:(a,b)=>length2D(a,b)>=.08, invalidHint:'Wire must be at least 0.08 units long',
+    create:(a,b)=>configureSource(new PassiveWire(c/freq,a,b),'passiveWire','PEC wire')
   }
 };
 function configureSource(source,type,name) {
@@ -2211,8 +2398,8 @@ function mountInterface() {
       <label><input id="em-adaptive-fields" type="checkbox" checked> Enable adaptive field resolution</label>
       <p class="muted">Optional. Refines field sampling with zoom and sustained frame rate, with hysteresis. Never uses a coarser grid than fixed mode at the same zoom and selected Low, Medium, or High resolution. Both modes share the same sample and tile safety limits. Refinement waits for camera motion to settle. Antenna currents and the PEC mesh are unchanged.</p>
       <div class="readout"><span>Field sampling</span><output id="em-adaptive-fields-status">Adaptive</output></div></div>
-      <div class="section"><strong>PEC wire solver</strong>
-      <label class="property">Maximum segment length · all PEC wires <input id="em-pec-mesh" type="number" min="0.02" max="1" step="0.01" value="${pecMaxSegmentLength}"></label>
+      <div class="section"><strong>Coupled PEC wire / slot solver</strong>
+      <label class="property">Maximum segment length · PEC wires and slots <input id="em-pec-mesh" type="number" min="0.02" max="1" step="0.01" value="${pecMaxSegmentLength}"></label>
       <div class="readout"><span>Coupled solve</span><output id="em-coupled-solve">Awaiting solve</output></div><div id="em-pec-segment-ratios"></div></div>
       <div class="section"><strong>Power diagnostics</strong><div class="readout"><span>Scene power-balance discrepancy</span><output id="em-power-balance">Updating…</output></div><p id="em-power-diagnostic-note" class="model-note"></p></div>
     </section>
@@ -2315,7 +2502,7 @@ function mountInterface() {
   find('zoom-in').onclick = () => setViewZoom(zoom * 1.25, width / 2, height / 2);
   find('zoom-reset').onclick = () => setViewZoom(1, width / 2, height / 2);
   document.addEventListener('keydown', handleKeyboard);
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden){fieldTiles.lastFrame=0;fieldTiles.frameMs=16.7;fieldPlan(true);}});
+  document.addEventListener('visibilitychange',()=>{frameTiming.last=0;if(!document.hidden){fieldTiles.lastFrame=0;fieldTiles.frameMs=16.7;fieldPlan(true);}});
   root.addEventListener('pointerdown', e => {
     if (!ui.palette.hidden && !ui.palette.contains(e.target) && !ui.add.contains(e.target)) closePalette();
   });
@@ -2432,7 +2619,7 @@ function renderModelReadouts(source,container) {
 }
 function deleteSelected() {
   if (!selectedComponent) return;
-  antennas = antennas.filter(a => a !== selectedComponent);
+  antennas = antennas.filter(a => a !== selectedComponent && !(a instanceof PECSlot && a.plane===selectedComponent));
   selectComponent(null); requestFieldUpdate();
 }
 function togglePause() { pause = !pause; time = millis()/timeScale; ui.play.textContent = pause ? '▶ Resume' : 'Ⅱ Pause'; }
@@ -2536,6 +2723,7 @@ function bindCanvasEvents() {
       const world=[conMyX(point[0]),conMyY(point[1])];
       const descriptor=componentTypes[placementType];
       if (!descriptor){updateHint('Choose a component from the Add palette');return;}
+      if(placementType==='pecSlot'){const plane=currentPECPlane();if(!plane){updateHint('Add a PEC plane first');return;}if(Math.abs(plane.signedDistance(world))*Scale*zoom>24){updateHint('Click on the PEC plane to place the slot');return;}}
       if (!descriptor.oneClick && !placementStart) { placementStart=world; updateHint(); return; }
       if (!descriptor.oneClick && !descriptor.validate(placementStart,world)) { updateHint(descriptor.invalidHint); return; }
       if(!descriptor){updateHint('Choose a component from the Add palette');return;}
@@ -2593,7 +2781,9 @@ function draw() {
     resizeCanvas(w,h); width=w; height=h; requestCameraUpdate();
   }
   const frameNow=performance.now();
+  // The controller estimates steady animation cost; FPS below measures ALL intervals.
   if(fieldTiles.lastFrame){const dt=frameNow-fieldTiles.lastFrame;if(dt<250)fieldTiles.frameMs=.9*fieldTiles.frameMs+.1*dt;}
+  recordPresentedFrame(frameNow);
   fieldTiles.lastFrame=frameNow;
   updateAdaptiveFieldResolution(frameNow);
   fieldSchedule();
@@ -2659,7 +2849,7 @@ function planeScreenTrace(plane,margin=16){
                         -margin,-margin,width+margin,height+margin);
 }
 function evalPlaneSideB(scene,side,x,y){
-  const e=scene?.elements; if(!e||!e.length) return [0,0];
+  const e=scene?.elements; if(!e) return [0,0];
   let br=0,bi=0;
   for(let n=0;n<e.length;n+=8){
     if(side!==e[n+7]) continue;
@@ -2669,6 +2859,7 @@ function evalPlaneSideB(scene,side,x,y){
     const crossr=dx*e[n+3]-dy*e[n+2],crossi=dx*e[n+5]-dy*e[n+4];
     br+=hr*crossr-hi*crossi; bi+=hr*crossi+hi*crossr;
   }
+  if(scene.magnetic?.length){const out=new Float64Array(6);for(let i=0;i<scene.magnetic.length;i+=6)addSlotElementField(out,x,y,scene.magnetic.subarray(i,i+6),side);br+=out[4];bi+=out[5];}
   return [br,bi];
 }
 function getPECSurfaceSamples(plane){
@@ -2684,6 +2875,7 @@ function getPECSurfaceSamples(plane){
   const samples=[]; let peak=0;
   for(let i=0;i<count;i++){
     const u=(i+0.5)/count,sx=x1+u*dx,sy=y1+u*dy,wx=(sx-orig[0])/(Scale*zoom),wy=(orig[1]-sy)/(Scale*zoom);
+    if(slotAtTrace(plane,wx,wy))continue; // No electric sheet current in the hole.
     const plus=evalPlaneSideB(scene,1,wx+eps*n[0],wy+eps*n[1]);
     const minus=evalPlaneSideB(scene,-1,wx-eps*n[0],wy-eps*n[1]);
     const kr=plus[0]-minus[0],ki=plus[1]-minus[1],amp=Math.hypot(kr,ki);
@@ -2746,66 +2938,84 @@ function drawPECSurfaceCurrentDensity(plane){
   }
   ctx.restore();
 }
-function drawCurrentChevrons(source,edges) {
+const chevronGeometryCache=new WeakMap();
+function currentChevronMarkers(edges){
+  const old=chevronGeometryCache.get(edges);if(old&&old.density===currentArrowDensity)return old.markers;
+  const markers=[];let run=[],total=0,last=null;
+  function flush(){
+    if(total>=12){const count=Math.max(1,Math.floor(total*currentArrowDensity/CURRENT_CHEVRON_SPACING));let index=0,offset=0;
+      for(let n=0;n<count;n++){const distance=(n+.5)*total/count;while(index<run.length-1&&offset+run[index].length<distance)offset+=run[index++].length;
+        const {edge,length}=run[index],t=(distance-offset)/length,x=edge.a[0]+t*(edge.b[0]-edge.a[0]),y=edge.a[1]+t*(edge.b[1]-edge.a[1]);
+        if(x>=-10&&y>=-10&&x<=width+10&&y<=height+10)markers.push({x,y,current:edge.current});
+      }
+    }run=[];total=0;
+  }
+  for(const edge of edges){const length=length2D(edge.a,edge.b);if(edge.currentDirection===false||length<1e-10)continue;if(last&&length2D(last,edge.a)>.5)flush();run.push({edge,length});total+=length;last=edge.b;}flush();
+  chevronGeometryCache.set(edges,{density:currentArrowDensity,markers});return markers;
+}
+function drawCurrentChevrons(source,edges){
   if(!simulate||currentArrowDensity===0)return;
-  const drive=source.I0,re=drive.a*frameCos-drive.b*frameSin,
-    im=drive.a*frameSin+drive.b*frameCos;
-  const currents=source.displayCurrents||source.currentSegments;
-  const ctx=drawingContext;
-  ctx.save();ctx.lineCap='round';ctx.lineJoin='round';
-  ctx.beginPath();ctx.rect(0,0,width,height);ctx.clip();
-  function drawRun(run,total) {
-    if(total<12)return;
-    const count=Math.max(1,Math.floor(total*currentArrowDensity/CURRENT_CHEVRON_SPACING));
-    let index=0,offset=0;
-    for(let n=0;n<count;n++) {
-      const distance=(n+.5)*total/count;
-      while(index<run.length-1&&offset+run[index].length<distance)offset+=run[index++].length;
-      const {edge,length}=run[index],t=(distance-offset)/length;
-      const x=edge.a[0]+t*(edge.b[0]-edge.a[0]),y=edge.a[1]+t*(edge.b[1]-edge.a[1]);
-      if(x<-10||y<-10||x>width+10||y>height+10)continue;
-      const j=currents[edge.current];if(!j)continue;
-      const ix=j[0]*re-j[2]*im,iy=j[1]*re-j[3]*im,magnitude=Math.hypot(ix,iy);
-      const envelope=Math.hypot(...j)*Math.hypot(drive.a,drive.b);
-      if(!(envelope>0)||!Number.isFinite(magnitude))continue;
-      // Fade relative to this local phasor near its zero crossing, while keeping
-      // absolute brightness on the existing common scale across all components.
-      const ratio=magnitude/envelope,f=Math.max(0,Math.min(1,(ratio-.02)/.18));
-      if(!f||!magnitude)continue;
-      const fade=f*f*(3-2*f),dx=ix/magnitude,dy=-iy/magnitude;
-      const opacity=currentOpacity(source,edge.current),isPEC=source instanceof PassiveWire;
-      const bright=isPEC?255:255*opacity;
-      ctx.globalAlpha=fade*(isPEC?opacity:1);
-      ctx.beginPath();
-      ctx.moveTo(x-4*dx-4*dy,y-4*dy+4*dx);
-      ctx.lineTo(x+4*dx,y+4*dy);
-      ctx.lineTo(x-4*dx+4*dy,y-4*dy-4*dx);
-      ctx.strokeStyle='rgba(0,0,0,0.85)';ctx.lineWidth=4;ctx.stroke();
-      ctx.strokeStyle='rgb('+bright+','+bright+',0)';ctx.lineWidth=2;ctx.stroke();
-    }
-  }
-  let run=[],total=0,last=null;
-  for(const edge of edges) {
-    const length=length2D(edge.a,edge.b);
-    if(edge.currentDirection===false||length<1e-10)continue;
-    if(last&&length2D(last,edge.a)>.5){drawRun(run,total);run=[];total=0;}
-    run.push({edge,length});total+=length;last=edge.b;
-  }
-  drawRun(run,total);ctx.restore();
+  const drive=source.I0,re=drive.a*frameCos-drive.b*frameSin,im=drive.a*frameSin+drive.b*frameCos,currents=source.displayCurrents||source.currentSegments,ctx=drawingContext;
+  ctx.save();ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();ctx.rect(0,0,width,height);ctx.clip();
+  for(const {x,y,current} of currentChevronMarkers(edges)){
+    const j=currents[current];if(!j)continue;
+    const ix=j[0]*re-j[2]*im,iy=j[1]*re-j[3]*im,mag=Math.hypot(ix,iy),env=Math.hypot(...j)*Math.hypot(drive.a,drive.b);
+    if(!(env>0)||!Number.isFinite(mag)||!mag)continue;
+    const f=Math.max(0,Math.min(1,(mag/env-.02)/.18));if(!f)continue;
+    const opacity=currentOpacity(source,current),isPEC=source instanceof PassiveWire,bright=isPEC?255:255*opacity,dx=ix/mag,dy=-iy/mag;
+    ctx.globalAlpha=f*f*(3-2*f)*(isPEC?opacity:1);ctx.beginPath();ctx.moveTo(x-4*dx-4*dy,y-4*dy+4*dx);ctx.lineTo(x+4*dx,y+4*dy);ctx.lineTo(x-4*dx+4*dy,y-4*dy-4*dx);
+    ctx.strokeStyle='rgba(0,0,0,0.85)';ctx.lineWidth=4;ctx.stroke();ctx.strokeStyle='rgb('+bright+','+bright+',0)';ctx.lineWidth=2;ctx.stroke();
+  }ctx.restore();
 }
 
+const componentGeometryCache=new WeakMap();
+function cachedDisplayEdges(a){
+  const key=[orig[0],orig[1],width,height,zoom,Scale,a.radius,a.meshCount,a.endPointA?.join(','),a.endPointB?.join(',')].join('|');
+  const old=componentGeometryCache.get(a);
+  if(old&&old.key===key&&old.segments===a.segments)return old.edges;
+  const edges=a.getDisplayEdges();componentGeometryCache.set(a,{key,segments:a.segments,edges});return edges;
+}
+function slotGlyph(s){
+  const p=screenPoint(s.center()),t=[s.plane.tangent[0],-s.plane.tangent[1]],n=[-t[1],t[0]],scale=Scale;
+  const dz=Math.max(7,.15*s.length*scale),w=Math.max(5,s.slotWidth*scale);
+  const d=[dz*(.32*t[0]+.95*n[0]),dz*(.32*t[1]+.95*n[1])];
+  return {a:[p[0]-d[0]/2,p[1]-d[1]/2],b:[p[0]+d[0]/2,p[1]+d[1]/2],w,t};
+}
+function drawSlotGlyph(s){
+  const {a,b,w,t}=slotGlyph(s),ctx=drawingContext;
+  const corners=[[a[0]-w*t[0]/2,a[1]-w*t[1]/2],[a[0]+w*t[0]/2,a[1]+w*t[1]/2],[b[0]+w*t[0]/2,b[1]+w*t[1]/2],[b[0]-w*t[0]/2,b[1]-w*t[1]/2]];
+  ctx.save();ctx.lineJoin='round';
+  // A small projected patch of the same screen makes the opening read as a
+  // hole in sheet metal rather than as a second wire crossing the plane.
+  const L=Math.hypot(b[0]-a[0],b[1]-a[1]),u=[(b[0]-a[0])/L,(b[1]-a[1])/L],pad=4;
+  const outer=[[a[0]-pad*u[0]-(w/2+pad)*t[0],a[1]-pad*u[1]-(w/2+pad)*t[1]],
+    [a[0]-pad*u[0]+(w/2+pad)*t[0],a[1]-pad*u[1]+(w/2+pad)*t[1]],
+    [b[0]+pad*u[0]+(w/2+pad)*t[0],b[1]+pad*u[1]+(w/2+pad)*t[1]],
+    [b[0]+pad*u[0]-(w/2+pad)*t[0],b[1]+pad*u[1]-(w/2+pad)*t[1]]];
+  ctx.beginPath();ctx.moveTo(...outer[0]);for(let i=1;i<4;i++)ctx.lineTo(...outer[i]);ctx.closePath();ctx.fillStyle='#a7b1be';ctx.fill();ctx.strokeStyle='#d7dfe8';ctx.lineWidth=1;ctx.stroke();
+  ctx.beginPath();ctx.moveTo(...corners[0]);for(let i=1;i<4;i++)ctx.lineTo(...corners[i]);ctx.closePath();
+  ctx.fillStyle='#060d17';ctx.fill();ctx.strokeStyle='#3a4655';ctx.lineWidth=2;ctx.stroke();
+  ctx.beginPath();ctx.moveTo(...corners[0]);ctx.lineTo(...corners[3]);ctx.lineTo(...corners[2]);ctx.strokeStyle='#d9e8f4';ctx.lineWidth=1.2;ctx.stroke();
+  ctx.restore();
+}
+function planeTracePath(ctx,plane,trace){
+  const [x1,y1,x2,y2]=trace,dx=x2-x1,dy=y2-y1,L=Math.hypot(dx,dy),cuts=[];
+  for(const s of currentPECSlots())if(s.plane===plane){const p=screenPoint(s.center()),u=((p[0]-x1)*dx+(p[1]-y1)*dy)/(L*L),h=s.slotWidth*Scale*zoom/(2*L);if(u+h>0&&u-h<1)cuts.push([Math.max(0,u-h),Math.min(1,u+h)]);}
+  cuts.sort((a,b)=>a[0]-b[0]);ctx.beginPath();let from=0;
+  for(const [lo,hi] of [...cuts,[1,1]]){if(lo>from){ctx.moveTo(x1+from*dx,y1+from*dy);ctx.lineTo(x1+lo*dx,y1+lo*dy);}from=Math.max(from,hi);}
+}
 function drawComponentOverlay() {
   push();
   for(const a of antennas) {
     if(a instanceof PECPlane){
-      // Draw the infinite plane as one uninterrupted silver conductor trace.
+      // Draw the infinite plane trace, leaving finite-width slot openings.
       // Its ends are defined only by the viewport; the two placement points
       // remain selectable via the standard endpoint handles below.
       const trace=planeScreenTrace(a,16);
       if(trace){
         const [x1,y1,x2,y2]=trace,ctx=drawingContext;
-        ctx.save();ctx.lineCap='round';ctx.setLineDash([]);
-        ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);
+        ctx.save();ctx.lineCap='butt';ctx.setLineDash([]);
+        planeTracePath(ctx,a,trace);
         ctx.strokeStyle='#353e4b';ctx.lineWidth=14;ctx.stroke();
         ctx.strokeStyle='#a7b1be';ctx.lineWidth=10;ctx.stroke();
         ctx.strokeStyle='#d7dfe8';ctx.lineWidth=4;ctx.stroke();
@@ -2814,9 +3024,13 @@ function drawComponentOverlay() {
       }
       continue;
     }
-    const edges=a.getDisplayEdges();
+    if(a instanceof PECSlot){drawSlotGlyph(a);continue;}
+    const edges=cachedDisplayEdges(a);
     for(const edge of edges) {
-      if(length2D(edge.a,edge.b)>1e-10) thickLine(edge.a,edge.b,edge.width,currentColor(a,edge.current));
+      if(length2D(edge.a,edge.b)>1e-10){
+        if(a instanceof PassiveWire){const color=currentColor(a,edge.current),ctx=drawingContext;ctx.lineCap='butt';ctx.lineWidth=edge.width;ctx.strokeStyle=`rgb(${color[0]},${color[1]},${color[2]})`;ctx.beginPath();ctx.moveTo(...edge.a);ctx.lineTo(...edge.b);ctx.stroke();}
+        else thickLine(edge.a,edge.b,edge.width,currentColor(a,edge.current));
+      }
     }
     drawCurrentChevrons(a,edges);
     if(a instanceof Dipole){
@@ -2851,20 +3065,31 @@ function updateAdvancedFieldReadouts(){
   const status=document.getElementById('em-adaptive-fields-status');
   if(status)status.textContent=(adaptiveFields.enabled?'Adaptive':'Fixed')+' · grid '+(sLength/Scale*2**fieldCameraLevel()).toPrecision(3);
   const container=document.getElementById('em-pec-segment-ratios');if(!container)return;
-  const wires=antennas.filter(a=>a instanceof PassiveWire),stamp=JSON.stringify(wires.map(w=>[w.label,w.meshLength,w.wavelength]));
+  const wires=antennas.filter(a=>a instanceof PassiveWire||a instanceof PECSlot),stamp=JSON.stringify(wires.map(w=>[w.label,w.meshLength,w.wavelength]));
   if(stamp===advancedMeshStamp)return;advancedMeshStamp=stamp;container.replaceChildren();
-  if(!wires.length){const p=document.createElement('p');p.className='muted';p.textContent='No PEC wires';container.appendChild(p);return;}
+  if(!wires.length){const p=document.createElement('p');p.className='muted';p.textContent='No PEC wires or slots';container.appendChild(p);return;}
   for(const w of wires){const row=document.createElement('div'),label=document.createElement('span'),value=document.createElement('output');row.className='readout';label.textContent=(w.label||'PEC wire')+' · segment / λ';value.textContent=(w.meshLength/w.wavelength).toFixed(4);row.append(label,value);container.appendChild(row);}
 }
-let fpsLabelUpdate=0;
+// Wall-clock frame intervals, independent of the adaptive controller. Never
+// discard long intervals; only a hidden-tab pause starts a new interval.
+const frameTiming={last:0,intervals:[],sum:0};
+function recordPresentedFrame(now){
+  const f=frameTiming;
+  if(f.last){const dt=now-f.last;f.intervals.push(dt);f.sum+=dt;
+    while(f.intervals.length>1&&f.sum-f.intervals[0]>=2000)f.sum-=f.intervals.shift();}
+  f.last=now;
+}
+let fpsLabelUpdate=0,lastStatusUpdate=-Infinity;
 function updateStatus() {
+  const now=performance.now();if(now-lastStatusUpdate<250)return;lastStatusUpdate=now;
   updateScenePowerReadouts();
   updateAdvancedFieldReadouts();
   const solveReadout=document.getElementById('em-coupled-solve');if(solveReadout)solveReadout.textContent=fieldTiles.dirtyPhysics?'Updating…':passiveSolveInfo.message;
   // Update the readout twice per second instead of causing DOM churn at 60 FPS.
   if(performance.now()-fpsLabelUpdate>500){
     fpsLabelUpdate=performance.now();
-    ui.fps.textContent='FPS '+Math.round(1000/fieldTiles.frameMs);
+    const f=frameTiming;ui.fps.textContent=f.sum?'FPS '+Math.round(1000*f.intervals.length/f.sum)+' · max '+Math.round(Math.max(...f.intervals))+' ms':'FPS —';
+    ui.fps.title='Frames per elapsed second and longest frame interval over approximately two seconds; includes solve stalls.';
   }
   const state=fieldTiles.dirtyPhysics?'Updating setup…':passiveSolveInfo.error&&!simulate?'Invalid geometry':waitProcess?'Refining fields '+Math.round(fieldTiles.progress*100)+'%'+(fieldTiles.stalePixels?' · previous setup visible':''):pause?'Paused':'Running';
   const status=`${state} · ${antennas.length} components${passiveSolveInfo.error?' · '+passiveSolveInfo.message:''}${currentPECPlane()?' · PEC plane':''}`;
@@ -2893,6 +3118,8 @@ function farFieldPower(scene,theta) {
     const jr=-ny*e[i+2]+nx*e[i+3],ji=-ny*e[i+4]+nx*e[i+5];
     re+=jr*co-ji*si;im+=jr*si+ji*co;
   }
+  const magnetic=scene.magnetic;
+  if(magnetic)for(let i=0;i<magnetic.length;i+=6){const phase=scene.k*(nx*magnetic[i]+ny*magnetic[i+1]),co=Math.cos(phase),si=Math.sin(phase),factor=2*Math.sign(side);re+=factor*(magnetic[i+3]*co-magnetic[i+4]*si);im+=factor*(magnetic[i+3]*si+magnetic[i+4]*co);}
   return re*re+im*im;
 }
 const radiationCache={scene:null,power:null,peak:0,stamp:''};
