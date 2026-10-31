@@ -1174,10 +1174,9 @@ function heatTransfer(value, scale) { return Math.pow(squiz(value,scale),display
 // In the solver's normalized units mu=1 and epsilon=1/c^2.
 function energyDensity(ex,ey,b) { return 0.5*((ex*ex+ey*ey)/(c*c)+b*b); }
 
-// Frequency and wave-speed defaults/bounds scaled together by 1.25; λ is unchanged.
 const minFreq = 0.0125;
-const maxFreq = 1.25;
-let freq = 0.5 * (minFreq + maxFreq);
+const maxFreq = 2;
+let freq = 0.3 * (minFreq + maxFreq);
 
 
 const minSpeed = 1.25;
