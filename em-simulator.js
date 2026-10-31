@@ -1,18 +1,4 @@
-/* 2026-10-30: honest frame timing, bounded heatmap warmup, cached wire geometry;
- * finite z-directed narrow PEC slots, coupled electric/magnetic MoM on both sides.
- * Slots use the thin-strip equivalent-radius approximation (a = width/4).
- * See SLOT_UPDATE.md for geometry, accuracy limits, and validation results.
- */
-/* Voltage-fed PEC antennas update (2026-10-27)
- * Center-fed: ideal peak-voltage narrow-gap source on a thin PEC rod.
- * End-fed: same source convention, with an explicit short counterpoise.
- * All PEC rods share one reciprocal MoM solve, including PEC-plane images.
- * Open feeds constrain port current to zero and solve the induced voltage.
- * Advanced controls share wire mesh length and set clock/arrow display rates.
- * Hertzian/loop/array currents stay prescribed. Power is reported in simulation
- * units; each source displays its signed net average power contribution.
- * Scene radiation uses full 3D angular integration; diagnostics are in Advanced.
- */
+
 class Antenna {
   constructor(wavelength, amp, phase, dl = 0.12) {
     this.wavelength = wavelength;
