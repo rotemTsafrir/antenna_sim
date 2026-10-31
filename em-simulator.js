@@ -1204,7 +1204,7 @@ const maxAmp = 25;
 
 //default current magnitude
 const defAmp = 10;
-const DEFAULT_WIRE_FEED_VOLTAGE = 150; // 3 × the supplied wire constructor default (50).
+const DEFAULT_WIRE_FEED_VOLTAGE = 100; 
 
 //
 const maxSep = 0.4;
@@ -1212,7 +1212,7 @@ const defaultDipoleSep = 0.2;
 
 const ARROW_SPACING_PX = 20;
 const maxArrowLen = 14;
-const thickDipole = 12;
+const thickDipole = 10;
 
 //storage
 segments = [];
@@ -2055,6 +2055,13 @@ const componentTypes = {
     validate:(a,b)=>length2D(a,b)>.001, invalidHint:'Choose a different point to set the axis',
     create:(a,b)=>configureSource(new LinearArray(c/freq,a,Math.atan2(b[1]-a[1],b[0]-a[0])),'linearArray','Array')
   },
+
+  passiveWire: {
+    name:'Passive PEC wire', description:'Two endpoints · coupled induced currents',
+    firstHint:'Click the first wire endpoint', secondHint:'Click the second wire endpoint',
+    validate:(a,b)=>length2D(a,b)>=.08, invalidHint:'Wire must be at least 0.08 units long',
+    create:(a,b)=>configureSource(new PassiveWire(c/freq,a,b),'passiveWire','PEC wire')
+  },
   pecPlane: {
     name:'Infinite PEC plane', description:'Two points define its trace · image method on both sides · one plane only',
     firstHint:'Click the first point on the infinite PEC plane', secondHint:'Click another point to set its direction',
@@ -2066,13 +2073,8 @@ const componentTypes = {
     name:'Slot in PEC plane',description:'Click the plane · finite z-length and opening width',oneClick:true,
     firstHint:'Click the PEC plane to poke a finite slot; adjust length and width in Properties',
     create:p=>configureSource(new PECSlot(c/freq,currentPECPlane(),p),'pecSlot','PEC slot')
-  },
-  passiveWire: {
-    name:'Passive PEC wire', description:'Two endpoints · coupled induced currents',
-    firstHint:'Click the first wire endpoint', secondHint:'Click the second wire endpoint',
-    validate:(a,b)=>length2D(a,b)>=.08, invalidHint:'Wire must be at least 0.08 units long',
-    create:(a,b)=>configureSource(new PassiveWire(c/freq,a,b),'passiveWire','PEC wire')
   }
+  
 };
 function configureSource(source,type,name) {
   source.setDl(resolution===1?dl_lr:resolution===2?dl_mr:dl_hr);
