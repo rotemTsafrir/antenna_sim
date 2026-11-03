@@ -1,13 +1,13 @@
 # EM Antenna Field Simulator
 
-An interactive browser-based electromagnetic field simulator for exploring antenna radiation, interference, polarization, phased arrays, and scattering by passive conducting wires and an infinite conducting plane.
+An interactive browser-based electromagnetic field simulator for exploring antenna radiation, near field phenomena, interference, polarization, phased arrays, and scattering by passive conducting wires and an infinite conducting plane.
 
 **Live demo:** [www.antennasim.com](https://www.antennasim.com)  
 **Source code:** [rotemTsafrir/antenna_sim](https://github.com/rotemTsafrir/antenna_sim)
 
 Build a scene, adjust source amplitudes and phases, and watch the electric and magnetic fields evolve. Add passive wires or an infinite conducting plane to explore induced currents, scattering, and reflection.
 
-The simulator is an educational visualization tool. It displays a planar slice of a three-dimensional field, using normalized simulation units and approximate antenna models.
+The simulator is an educational visualization tool that displays a two-dimensional slice of a three-dimensional electromagnetic field, using normalized simulation units and simplified antenna models. All sources are confined to the same plane, resulting in an electric field that lies within the plane and a magnetic field that is perpendicular to it.
 
 ## Features
 
@@ -18,6 +18,7 @@ The simulator is an educational visualization tool. It displays a planar slice o
 - Passive thin PEC wires coupled to all voltage-fed wire antennas in one global system.
 - Signed average source-power contributions, total 3D radiated power, and power-balance diagnostics.
 - Infinite PEC plane perpendicular to the simulation plane, with reflected fields and surface-current visualization.
+- The option to poke slots in the PEC plane and observe diffraction.
 - Linear arrays of Hertzian dipoles or circular loops.
 - Animated electric-field, magnetic-field, energy-flux, and energy-density views.
 - Cycle-averaged, peak-normalized far-field radiation patterns in the XY plane.
@@ -310,4 +311,4 @@ Then open [http://localhost:8000](http://localhost:8000). Alternatively, use an 
 
 The simulator runs in the browser using JavaScript and **p5.js**. Field calculation, the coupled PEC-wire solve, and rendering run client-side; no server-side electromagnetic computation is required.
 
-Feedback, bug reports, and suggestions are welcome. When reporting a numerical issue, include the scene geometry, frequency, wave speed, wire radii, mesh settings, and any solver warning.
+Feedback, bug reports, and suggestions are welcome. When reporting a numerical issue, it would be very helpful to include the scene geometry, frequency, wave speed, wire radii, mesh settings, and any solver warning.
