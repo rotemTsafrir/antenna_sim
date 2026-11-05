@@ -485,7 +485,7 @@ class RectangularLoop extends Dipole {
   getHitEdges(){return this.getDisplayEdges();}
   getSelectionPoints(){return this.corners.slice(0,-1).map(screenPoint);}
   getProperties(){return [
-    ...[['loopWidth','Width'],['loopHeight','Height']].map(([key,label])=>({key,label,min:.02,max:Math.max(20,4*this.wavelength,this[key]),step:.01,get:()=>this[key],set:v=>{this[key]=v;this.rebuild();}})),
+    ...[['loopWidth','Width'],['loopHeight','Height']].map(([key,label])=>({key,label,min:.02,max:Math.max(5,4*this.wavelength,this[key]),step:.01,get:()=>this[key],set:v=>{this[key]=v;this.rebuild();}})),
     {key:'angle',label:'Rotation (°)',min:0,max:360,step:1,get:()=>this.angle*180/Math.PI,set:v=>{this.angle=v*Math.PI/180;this.rebuild();}},
     ...super.getProperties()
   ];}
