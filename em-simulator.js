@@ -383,8 +383,8 @@ class Dipole extends PassiveWire {
       ['Induced feed voltage · peak',fieldTiles.dirtyPhysics||passiveSolveInfo.error?'Updating…':Math.hypot(...this.openVoltage).toPrecision(5)],
       ['Induced voltage phase (°)',fieldTiles.dirtyPhysics||passiveSolveInfo.error?'Updating…':(Math.atan2(this.openVoltage[1],this.openVoltage[0])*180/Math.PI).toFixed(1)]
     ]:[]),
-    ['Feed current · peak',passiveSolveInfo.error?'Unavailable':Math.hypot(...i).toPrecision(4)],
-    ['Current phase (°)',passiveSolveInfo.error?'Unavailable':(Math.atan2(i[1],i[0])*180/Math.PI).toFixed(1)],
+    ['Feed current · peak',fieldTiles.dirtyPhysics?'Updating…':passiveSolveInfo.error?'Unavailable':Math.hypot(...i).toPrecision(4)],
+    ['Current phase (°)',fieldTiles.dirtyPhysics?'Updating…':passiveSolveInfo.error?'Unavailable':(Math.atan2(i[1],i[0])*180/Math.PI).toFixed(1)],
     ...super.getReadouts()];}
   getNotes(){return [
     ...(this.feedMode==='open'?[{text:'Open-circuit feed: net port current is constrained to zero and the induced terminal voltage is solved from all sources and scattering bodies. It is distinct from setting a voltage source to zero, which shorts the feed.'}]:[{text:'Ideal voltage source across a narrow feed region; zero source impedance. Voltage and current amplitudes are peak phasors in simulation units.'}]),
@@ -402,6 +402,95 @@ class EndFedAntenna extends Dipole {
   ];}
   getReadouts(){return [...super.getReadouts(),['Counterpoise length',(this.length*this.feedFraction).toFixed(4)],['Radiating arm length',(this.length*(1-this.feedFraction)).toFixed(4)]];}
   getNotes(){return [{text:'First endpoint = counterpoise tip; second endpoint = long-arm tip. The feed is at the marked junction. This is an unbalanced two-arm antenna; it does not assume an invisible ground, matching transformer, or coax shield.'},...super.getNotes()];}
+}
+
+
+// Periodic scalar rooftop currents on a single connected rectangular contour.
+// Node coefficients are shared at corners; vectors follow each panel's tangent.
+// meshCount-1 is the number of periodic unknowns, matching the port assembler.
+class RectangularLoop extends Dipole {
+  constructor(wavelength,center,amp=DEFAULT_WIRE_FEED_VOLTAGE,phase=0){
+    super(wavelength,[center[0]-wavelength/8,center[1]],[center[0]+wavelength/8,center[1]],amp,phase);
+    this.center=[...center];this.loopWidth=wavelength/4;this.loopHeight=wavelength/4;this.angle=0;
+    this.radius=Math.min(.06,wavelength/200);this.feedFraction=0;
+    this.rebuild();this.sep=Math.min(.02,this.maxFeedSeparation());
+  }
+  rebuild(){
+    if(!this.center)return super.rebuild();
+    const W=this.loopWidth,H=this.loopHeight,co=Math.cos(this.angle),si=Math.sin(this.angle);
+    const transform=([x,y])=>[this.center[0]+co*x-si*y,this.center[1]+si*x+co*y];
+    const corners=[[0,-H/2],[W/2,-H/2],[W/2,H/2],[-W/2,H/2],[-W/2,-H/2],[0,-H/2]].map(transform);
+    this.corners=corners;this.panels=[];let distance=0;
+    for(let side=0;side<5;side++){
+      const a=corners[side],b=corners[side+1],L=length2D(a,b),count=Math.max(1,Math.ceil(L/this.targetLength)),h=L/count,t=a.map((v,i)=>(b[i]-v)/L);
+      for(let e=0;e<count;e++){const start=a.map((v,i)=>v+t[i]*h*e);this.panels.push({a:start,b:start.map((v,i)=>v+t[i]*h),t,h,s:distance});distance+=h;}
+    }
+    this.length=distance;this.meshCount=this.panels.length+1;this.meshLength=Math.max(...this.panels.map(p=>p.h));
+    this.endPointA=[...corners[0]];this.endPointB=[...corners[0]];this.tangent=this.panels[0].t;
+    this.nodeCurrents=Array.from({length:this.meshCount+1},()=>new Float64Array(4));
+    this.samples=this.testSamples(Math.min(this.meshLength,this.radius),4);
+    this.segments=this.samples.map(q=>q.p);this.segmentLengths=Float64Array.from(this.samples,q=>q.weight);
+    this.refreshCurrents();if(this.sep!==undefined)this.setSep(this.sep);
+  }
+  nodeTangent(i){return this.panels[i-1].t;}
+  scalarCurrent(i){const v=this.nodeCurrents[i+1],t=this.panels[i].t;return [v[0]*t[0]+v[1]*t[1],v[2]*t[0]+v[3]*t[1]];}
+  currentAt(e,u){
+    if(!this.panels)return super.currentAt(e,u);
+    const a=this.scalarCurrent(e),b=this.scalarCurrent((e+1)%this.panels.length),t=this.panels[e].t;
+    const re=(1-u)*a[0]+u*b[0],im=(1-u)*a[1]+u*b[1];return [re*t[0],re*t[1],im*t[0],im*t[1]];
+  }
+  refreshCurrents(){
+    if(!this.panels)return super.refreshCurrents();
+    this.currentSegments=this.samples.map(q=>this.currentAt(q.e,q.u));
+    this.displayCurrents=this.panels.flatMap((p,e)=>Array.from({length:4},(_,j)=>this.currentAt(e,(j+.5)/4)));
+  }
+  point(f){
+    if(!this.panels)return super.point(f);
+    const d=((f%1)+1)%1*this.length,p=this.panels.find(p=>d<=p.s+p.h+1e-12)||this.panels.at(-1);
+    return p.a.map((v,i)=>v+p.t[i]*(d-p.s));
+  }
+  testSamples(maxLength,order=4){
+    const xs=order===8?MOM_G8_X:WIRE_GAUSS_NODES,ws=order===8?MOM_G8_W:WIRE_GAUSS_WEIGHTS,out=[],N=this.panels.length;
+    this.panels.forEach((p,e)=>{const count=Math.max(1,Math.ceil(p.h/maxLength));
+      for(let j=0;j<count;j++)for(let q=0;q<xs.length;q++){
+        const u=(j+(xs[q]+1)/2)/count;
+        out.push({p:p.a.map((v,i)=>v+p.t[i]*u*p.h),t:p.t,e,u,weight:p.h*ws[q]/(2*count),hats:[[e,1-u,-1/p.h],[(e+1)%N,u,1/p.h]]});
+      }
+    });return out;
+  }
+  maxFeedSeparation(){return this.center?Math.min(.1,.02*this.wavelength,.1*this.loopWidth):super.maxFeedSeparation();}
+  feedWeights(){
+    if(!this.panels)return super.feedWeights();
+    const weights=new Float64Array(this.panels.length),g=this.feedSeparation();
+    if(g<1e-12){weights[0]=1;return weights;}
+    // Exact hat integrals over the two intervals adjacent to the periodic feed.
+    this.panels.forEach((p,e)=>{for(const [lo,hi] of [[0,g/2],[this.length-g/2,this.length]]){
+      const a=Math.max(p.s,lo),b=Math.min(p.s+p.h,hi);if(b<=a)continue;
+      const right=((b-p.s)**2-(a-p.s)**2)/(2*p.h*g);
+      weights[e]+=(b-a)/g-right;weights[(e+1)%weights.length]+=right;
+    }});return weights;
+  }
+  feedCurrent(){
+    if(!this.panels)return super.feedCurrent();
+    const out=[0,0];this.feedWeights().forEach((w,i)=>{const v=this.scalarCurrent(i);out[0]+=w*v[0];out[1]+=w*v[1];});return out;
+  }
+  getDisplayEdges(){
+    if(!this.panels)return super.getDisplayEdges();
+    const edges=[],g=this.feedSeparation()/2;
+    this.panels.forEach((p,e)=>{for(let j=0;j<4;j++){
+      const a=Math.max(p.s+j*p.h/4,g),b=Math.min(p.s+(j+1)*p.h/4,this.length-g);
+      if(b>a)edges.push({a:screenPoint(p.a.map((v,i)=>v+p.t[i]*(a-p.s))),b:screenPoint(p.a.map((v,i)=>v+p.t[i]*(b-p.s))),current:4*e+j,width:Math.max(3,2*this.radius*Scale*zoom)});
+    }});return edges;
+  }
+  getHitEdges(){return this.getDisplayEdges();}
+  getSelectionPoints(){return this.corners.slice(0,-1).map(screenPoint);}
+  getProperties(){return [
+    ...[['loopWidth','Width'],['loopHeight','Height']].map(([key,label])=>({key,label,min:.02,max:Math.max(20,4*this.wavelength,this[key]),step:.01,get:()=>this[key],set:v=>{this[key]=v;this.rebuild();}})),
+    {key:'angle',label:'Rotation (°)',min:0,max:360,step:1,get:()=>this.angle*180/Math.PI,set:v=>{this.angle=v*Math.PI/180;this.rebuild();}},
+    ...super.getProperties()
+  ];}
+  getReadouts(){return super.getReadouts().map(([label,value])=>label==='Feed'?[label,'Rectangular loop · side-centred gap']:label==='Length / wavelength · L/λ'?['Perimeter / wavelength · P/λ',value]:label==='Segments'?[label,String(this.panels.length)]:[label,value]);}
+  getNotes(){return [{text:'Connected rectangular thin-wire contour with continuous scalar current at every corner. Dimensions default to λ/4 × λ/4 at creation and remain fixed when frequency or wave speed changes. Loop interactions use a regularized thin-wire Galerkin kernel; corner details and gap capacitance are not resolved.'},...super.getNotes()];}
 }
 
 // The user draws the trace of an INFINITE PEC plane. The plane is perpendicular
@@ -515,7 +604,7 @@ function momWireSlotBlock(w,s){
   const n=w.meshCount-1,m=s.meshCount-1,re=new Float64Array(n*m),im=new Float64Array(n*m),center=s.center(),side=s.plane.side(w.endPointA);
   for(const x of a)for(const y of b){
     const dx=x.p[0]-center[0],dy=x.p[1]-center[1],g=greenData(dx,dy,Math.hypot(w.radius,s.radius),y.p[1]);
-    const v=2*side*c*(-dy*w.tangent[0]+dx*w.tangent[1])*x.weight*y.weight;
+    const v=2*side*c*(-dy*x.t[0]+dx*x.t[1])*x.weight*y.weight;
     for(const [i,fi] of x.hats)for(const [j,fj] of y.hats){const q=i*m+j;re[q]+=v*fi*fj*g[2];im[q]+=v*fi*fj*g[3];}
   }
   return {rows:n,cols:m,re,im};
@@ -560,7 +649,7 @@ function planeGeometryError(plane,components){
   for(const a of components){
     if(a instanceof PECPlane||a instanceof PECSlot)continue;
     let points=[],clearance=1e-5;
-    if(a instanceof PassiveWire){points=[a.endPointA,a.endPointB];clearance=a.radius*1.001;}
+    if(a instanceof PassiveWire){points=a.panels?a.corners:[a.endPointA,a.endPointB];clearance=a.radius*1.001;}
     else if(a instanceof Dipole){points=[a.endPointA,a.endPointB];}
     else if(a instanceof HertzianDipole){points=[a.position];}
     else if(a instanceof SmallLoop){points=[a.center];clearance=a.radius+1e-5;}
@@ -589,6 +678,12 @@ function momMirroredWire(w,plane){
   const key=JSON.stringify([momWireKey(w),plane.endPointA,plane.endPointB,w.targetLength]);
   const cached=mirroredWireCache.get(w);
   if(cached&&cached.key===key)return cached.wire;
+  if(w.panels){
+    const mirror=Object.create(RectangularLoop.prototype);Object.assign(mirror,w);
+    mirror.panels=w.panels.map(p=>{const a=plane.mirrorPoint(p.a),b=plane.mirrorPoint(p.b);return {...p,a,b,t:a.map((v,i)=>(b[i]-v)/p.h)};});
+    mirror.corners=w.corners.map(p=>plane.mirrorPoint(p));mirror.endPointA=plane.mirrorPoint(w.endPointA);mirror.endPointB=plane.mirrorPoint(w.endPointB);
+    mirror.tangent=mirror.panels[0].t;mirroredWireCache.set(w,{key,wire:mirror});return mirror;
+  }
   const mirror=new PassiveWire(w.wavelength,plane.mirrorPoint(w.endPointA),plane.mirrorPoint(w.endPointB));
   mirror.radius=w.radius;mirror.targetLength=w.targetLength;mirror.meshMultiple=w.meshMultiple;mirror.rebuild();
   mirroredWireCache.set(w,{key,wire:mirror});
@@ -671,6 +766,7 @@ function momHatWeight(s,h) {
   return C-D/(k*k);
 }
 function momSelfBlock(w) {
+  if(w.panels)return momContourBlock(w,w);
   const n=w.meshCount-1,h=w.meshLength,a=w.radius,key=JSON.stringify([n,h,a,k,freq]);
   if(momSelfCache.has(key)){momLastStats.selfHits++;return momSelfCache.get(key);}
   const offsets=[];
@@ -704,21 +800,23 @@ function momWireDistance(a,b){
   if(Math.abs(cross)>1e-14){const tx=q[0]-p[0],ty=q[1]-p[1],u=(tx*sy-ty*sx)/cross,v=(tx*ry-ty*rx)/cross;if(u>=0&&u<=1&&v>=0&&v<=1)return 0;}
   return Math.min(momPointSegmentDistance(p,b.endPointA,b.endPointB),momPointSegmentDistance(a.endPointB,b.endPointA,b.endPointB),momPointSegmentDistance(q,a.endPointA,a.endPointB),momPointSegmentDistance(b.endPointB,a.endPointA,a.endPointB));
 }
-function momWireKey(w){return [w.endPointA[0],w.endPointA[1],w.endPointB[0],w.endPointB[1],w.radius,w.meshCount];}
+function momWireKey(w){if(w.panels)return ['contour',w.panels.map(p=>[p.a,p.b]),w.radius];return [w.endPointA[0],w.endPointA[1],w.endPointB[0],w.endPointB[1],w.radius,w.meshCount];}
 function momTestSamples(w,maxLength=w.meshLength,order=4){
+  if(w.panels)return w.testSamples(maxLength,order);
   const count=Math.max(1,Math.ceil(w.meshLength/maxLength)),xs=order===8?MOM_G8_X:MOM_G4_X,ws=order===8?MOM_G8_W:MOM_G4_W,out=[];
   for(let e=0;e<w.meshCount;e++)for(let p=0;p<count;p++)for(let q=0;q<xs.length;q++){
     const u=(p+(xs[q]+1)/2)/count,hats=[];
     if(e>0)hats.push([e-1,1-u,-1/w.meshLength]);
     if(e+1<w.meshCount)hats.push([e,u,1/w.meshLength]);
-    out.push({p:w.point((e+u)/w.meshCount),weight:w.meshLength*ws[q]/(2*count),hats});
+    out.push({p:w.point((e+u)/w.meshCount),t:w.tangent,weight:w.meshLength*ws[q]/(2*count),hats});
   }
   return out;
 }
-function momRingOffsets(w,count){
-  return Array.from({length:count},(_,i)=>{const t=2*Math.PI*(i+.5)/count,r=w.radius;return [-w.tangent[1]*r*Math.cos(t),w.tangent[0]*r*Math.cos(t),r*Math.sin(t)];});
+function momRingOffsets(w,count,tangent=w.tangent){
+  return Array.from({length:count},(_,i)=>{const t=2*Math.PI*(i+.5)/count,r=w.radius;return [-tangent[1]*r*Math.cos(t),tangent[0]*r*Math.cos(t),r*Math.sin(t)];});
 }
 function momMutualBlock(a,b){
+  if(a.panels||b.panels)return momContourBlock(a,b);
   const key=JSON.stringify([momWireKey(a),momWireKey(b),k,freq]);
   let map=momPairCache.get(a);if(!map){map=new WeakMap();momPairCache.set(a,map);}
   const old=map.get(b);if(old&&old.key===key){momLastStats.pairHits++;return old.block;}
@@ -741,6 +839,39 @@ function momMutualBlock(a,b){
   }
   map.set(b,{key,block});momLastStats.pairBuilds++;return block;
 }
+
+function momBodyEdges(w){return w.panels||[{a:w.endPointA,b:w.endPointB}];}
+function momContourBlock(a,b){
+  const key=JSON.stringify([momWireKey(a),momWireKey(b),k,freq]);
+  let map=momPairCache.get(a);if(!map){map=new WeakMap();momPairCache.set(a,map);}
+  const cached=map.get(b);if(cached&&cached.key===key){momLastStats.pairHits++;return cached.block;}
+  if(a!==b){
+    for(const x of momBodyEdges(a))for(const y of momBodyEdges(b)){
+      if(momWireDistance({endPointA:x.a,endPointB:x.b},{endPointA:y.a,endPointB:y.b})<=a.radius+b.radius)
+        throw Error('PEC wire bodies overlap or touch; separate them');
+    }
+  }
+  for(const w of [a,b])if(w.panels){
+    // Opposite sides must remain separated; adjacent panels share valid corners.
+    const W=length2D(w.corners[1],w.corners[4]),H=length2D(w.corners[1],w.corners[2]);
+    if(Math.min(W,H)<=2*w.radius)throw Error('Loop dimensions must exceed twice the wire radius');
+  }
+  const radius=Math.max(a.radius,b.radius),step=Math.min(radius,c/freq/16);
+  const sa=momTestSamples(a,Math.min(a.meshLength,step)),sb=a===b?sa:momTestSamples(b,Math.min(b.meshLength,step));
+  if(sa.length*sb.length>16000000)throw Error('Loop integration budget exceeded; increase wire radius or reduce dimensions');
+  const n=a.meshCount-1,m=b.meshCount-1,block={rows:n,cols:m,re:new Float64Array(n*m),im:new Float64Array(n*m)},omega=2*Math.PI*freq;
+  for(let ix=0;ix<sa.length;ix++)for(let iy=(a===b?ix:0);iy<sb.length;iy++){
+    const x=sa[ix],y=sb[iy],R=Math.hypot(x.p[0]-y.p[0],x.p[1]-y.p[1],radius),gr=Math.cos(k*R)/R,gi=-Math.sin(k*R)/R;
+    const dot=x.t[0]*y.t[0]+x.t[1]*y.t[1],weight=omega*x.weight*y.weight;
+    for(const [i,fi,di] of x.hats)for(const [j,fj,dj] of y.hats){
+      const v=weight*(dot*fi*fj-di*dj/(k*k)),re=v*gi,im=-v*gr,q=i*m+j;
+      block.re[q]+=re;block.im[q]+=im;
+      if(a===b&&ix!==iy){const qt=j*m+i;block.re[qt]+=re;block.im[qt]+=im;}
+    }
+  }
+  map.set(b,{key,block});momLastStats.pairBuilds++;return block;
+}
+
 function momAssembleWires(wires){
   let n=0;for(const w of wires){w.solveOffset=n;n+=w.meshCount-1;}
   if(n>MAX_PASSIVE_UNKNOWNS)throw Error('Limit '+MAX_PASSIVE_UNKNOWNS+' wire-current unknowns; increase segment length or remove wires');
@@ -779,8 +910,8 @@ function momExcitationWires(wires){
       if(!unit||unit.key!==key||unit.segments!==a.segments||unit.currents!==a.currentSegments||unit.lengths!==a.segmentLengths||unit.radius!==sourceRadius(a)){
         if(!samples)samples=momTestSamples(w,Math.min(w.meshLength,c/freq/10),8);
         unit={key,segments:a.segments,currents:a.currentSegments,lengths:a.segmentLengths,radius:sourceRadius(a),re:new Float64Array(w.meshCount-1),im:new Float64Array(w.meshCount-1)};
-        const ring=momRingOffsets(w,8);
         for(const q of samples){
+          const ring=momRingOffsets(w,8,q.t);
           out.fill(0);
           for(let j=0;j<a.segments.length;j++){
             const v=a.currentSegments[j],L=a.segmentLengths[j]/ring.length,moment=[L*v[0],L*v[1],L*v[2],L*v[3]];
@@ -792,7 +923,7 @@ function momExcitationWires(wires){
               }
             }
           }
-          const re=w.tangent[0]*out[0]+w.tangent[1]*out[2],im=w.tangent[0]*out[1]+w.tangent[1]*out[3];
+          const re=q.t[0]*out[0]+q.t[1]*out[2],im=q.t[0]*out[1]+q.t[1]*out[3];
           for(const [i,f] of q.hats){unit.re[i]-=q.weight*f*re;unit.im[i]-=q.weight*f*im;}
         }
         map.set(a,unit);momLastStats.excitationBuilds=(momLastStats.excitationBuilds||0)+1;
@@ -862,11 +993,11 @@ function solvePassiveWires(){
     const {ar,ai,n}=matrix,{br,bi}=momPortExcitation(wires,n),[xr,xi]=solveFactoredComplex(matrix.lu,br,bi);
     let err=0,norm=0;for(let i=0;i<n;i++){let rr=-br[i],ii=-bi[i];for(let j=0;j<n;j++){rr+=ar[i*n+j]*xr[j]-ai[i*n+j]*xi[j];ii+=ar[i*n+j]*xi[j]+ai[i*n+j]*xr[j];}err+=rr*rr+ii*ii;norm+=br[i]*br[i]+bi[i]*bi[i];}
     const residual=Math.sqrt(err/Math.max(norm,1e-300));if(!Number.isFinite(residual)||residual>1e-7)throw Error('Passive solve failed residual check');
-    for(const w of wires){w.nodeCurrents=Array.from({length:w.meshCount+1},()=>new Float64Array(4));for(let i=1;i<w.meshCount;i++){const j=w.solveOffset+i-1,t=w.tangent;w.nodeCurrents[i]=new Float64Array([t[0]*xr[j],t[1]*xr[j],t[0]*xi[j],t[1]*xi[j]]);}w.refreshCurrents();}
+    for(const w of wires){w.nodeCurrents=Array.from({length:w.meshCount+1},()=>new Float64Array(4));for(let i=1;i<w.meshCount;i++){const j=w.solveOffset+i-1,t=w.panels?w.nodeTangent(i):w.tangent;w.nodeCurrents[i]=new Float64Array([t[0]*xr[j],t[1]*xr[j],t[0]*xi[j],t[1]*xi[j]]);}w.refreshCurrents();}
     for(const s of slots){s.coefficients=Array.from({length:s.meshCount+1},(_,i)=>i===0||i===s.meshCount?[0,0]:[xr[s.solveOffset+i-1],xi[s.solveOffset+i-1]]);s.refreshMagnetic();}
     wires.filter(w=>w instanceof Dipole&&w.feedMode==='open').forEach((w,q)=>{w.openVoltage=[xr[matrix.wireUnknowns+q],xi[matrix.wireUnknowns+q]];});
     passiveSignature={k,freq,sig};momLastStats.elapsedMs=performance.now()-begin;
-    passiveSolveInfo={message:n+' unknowns · cylindrical kernel'+(slots.length?' · narrow-slot approximation':''),error:false,residual,count:n};
+    passiveSolveInfo={message:n+' unknowns · '+(wires.some(w=>w.panels)?'cylindrical / regularized contour kernels':'cylindrical kernel')+(slots.length?' · narrow-slot approximation':''),error:false,residual,count:n};
   }catch(e){for(const s of slots){s.coefficients=Array.from({length:s.meshCount+1},()=>[0,0]);s.refreshMagnetic();}for(const w of wires){if(w instanceof Dipole)w.openVoltage=[0,0];w.nodeCurrents=Array.from({length:w.meshCount+1},()=>new Float64Array(4));w.refreshCurrents();}passiveSolveInfo={message:e.message+' (PEC wire fields and power readouts disabled)',error:true};}
 }
 
@@ -881,7 +1012,7 @@ function powerElements(a){
   const samples=a instanceof PassiveWire?momTestSamples(a,Math.min(a.meshLength,c/freq/12)):null;
   return (samples||a.segments).map((q,index)=>{
     let p,j,L;
-    if(samples){p=q.p;L=q.weight;j=[0,0,0,0];for(const [n,f] of q.hats)for(let d=0;d<4;d++)j[d]+=f*a.nodeCurrents[n+1][d];}
+    if(samples){p=q.p;L=q.weight;j=[0,0,0,0];if(a.panels)j=a.currentAt(q.e,q.u);else for(const [n,f] of q.hats)for(let d=0;d<4;d++)j[d]+=f*a.nodeCurrents[n+1][d];}
     else {p=q;j=a.currentSegments[index];L=a.segmentLengths[index];}
     const d=a.I0;
     return {p,j:[L*(j[0]*d.a-j[2]*d.b),L*(j[1]*d.a-j[3]*d.b),L*(j[0]*d.b+j[2]*d.a),L*(j[1]*d.b+j[3]*d.a)]};
@@ -1574,8 +1705,7 @@ function startProcessingNewSetup(){
   const plane=currentPECPlane();
   const geometryError=planeGeometryError(plane,antennas);
   if(geometryError){
-    // Retain the previous display and expose the geometry error rather than
-    // attempting an invalid half-space image solution on every frame.
+    // Keep the cleared display and expose invalid geometry without retrying each frame.
     fieldTiles.dirtyPhysics=false;processingScheduled=false;waitProcess=false;
     simulate=false;resetTemporalCache();
     passiveSolveInfo={message:geometryError,error:true};
@@ -2028,6 +2158,11 @@ const componentTypes = {
     create:(a,b)=>configureSource(new Dipole(c/freq,a,b,DEFAULT_WIRE_FEED_VOLTAGE,0,thickDipole/Scale),'dipole','Dipole')
   },
   
+  rectangularLoop: {
+    name:'Rectangular PEC loop',description:'Connected thin wire · voltage-fed gap',oneClick:true,
+    firstHint:'Click the loop center; edit dimensions, rotation and feed in Properties',
+    create:a=>configureSource(new RectangularLoop(c/freq,a),'rectangularLoop','Rectangular loop')
+  },
   endFed: {
     name:'End-fed antenna', description:'Voltage-fed long arm + explicit short counterpoise',
     firstHint:'Click the counterpoise tip', secondHint:'Click the long-arm tip (feed near the first endpoint)',
@@ -2345,8 +2480,6 @@ function mountInterface() {
       <label class="top-control">Field <select id="em-field"><option value="E">Electric field</option><option value="B">Magnetic field</option><option value="S">Energy flux</option><option value="U">Energy density</option></select></label>
       <label class="top-control">Frequency <input id="em-frequency" type="number" min="${minFreq}" max="${maxFreq}" step="0.00625" value="${freq}" title="Simulation frequency"></label>
       <label class="top-control">Wave speed <input id="em-speed" type="number" min="${minSpeed}" max="${maxSpeed}" step="0.125" value="${c}" title="Simulation wave speed"></label>
-      <label class="top-control">Quality <select id="em-quality"><option value="1">Low</option><option value="2" selected>Medium</option><option value="3">High</option></select></label>
-      <label class="top-control" title="Cache phase-indexed field heatmaps; arrows and currents remain continuous"><input id="em-temporal" type="checkbox" checked> Temporal cache</label>
       <button id="em-advanced" aria-expanded="false" aria-controls="em-advanced-panel">Advanced</button>
       <button id="em-radiation" aria-expanded="false" aria-controls="em-radiation-panel">Radiation pattern</button>
     </header>
@@ -2382,6 +2515,8 @@ function mountInterface() {
       <label class="property">Simulation clock speed <output id="em-clock-rate-value">1×</output><input id="em-clock-rate" type="range" min="0" max="4" step="0.1" value="1"></label>
       <p class="muted">Changes animation time only; wave speed and frequency are unchanged.</p></div>
       <div class="section"><strong>Field resolution</strong>
+      <label class="top-control">Quality <select id="em-quality"><option value="1">Low</option><option value="2" selected>Medium</option><option value="3">High</option></select></label>
+      <label class="top-control" title="Cache phase-indexed field heatmaps; arrows and currents remain continuous"><input id="em-temporal" type="checkbox" checked> Temporal cache</label>
       <label><input id="em-adaptive-fields" type="checkbox" checked> Enable adaptive field resolution</label>
       <p class="muted">Optional. Refines field sampling with zoom and sustained frame rate, with hysteresis. Never uses a coarser grid than fixed mode at the same zoom and selected Low, Medium, or High resolution. Both modes share the same sample and tile safety limits. Refinement waits for camera motion to settle. Antenna currents and the PEC mesh are unchanged.</p>
       <div class="readout"><span>Field sampling</span><output id="em-adaptive-fields-status">Adaptive</output></div></div>
@@ -2496,6 +2631,7 @@ function mountInterface() {
 }
 
 function requestFieldUpdate(delay = 0) {
+  clearSceneFieldCaches();
   fieldTiles.dirtyPhysics=true;
   if(fieldTiles.pending&&fieldTiles.worker)fieldTiles.worker.postMessage({kind:'cancel',id:fieldTiles.pending.id});
   fieldTiles.pending=null;
@@ -2582,6 +2718,7 @@ function renderInspector() {
       property.set(value); syncInputs(property.get());
       requestFieldUpdate();
       renderModelReadouts(a,readout);
+      if(a instanceof RectangularLoop && ['loopWidth','loopHeight'].includes(property.key))renderInspector();
     };
     number.onchange = () => commit(number); range.onchange = () => commit(range);
     section.appendChild(row);
@@ -2957,7 +3094,7 @@ function drawCurrentChevrons(source,edges){
 
 const componentGeometryCache=new WeakMap();
 function cachedDisplayEdges(a){
-  const key=[orig[0],orig[1],width,height,zoom,Scale,a.radius,a.meshCount,a.endPointA?.join(','),a.endPointB?.join(',')].join('|');
+  const key=[orig[0],orig[1],width,height,zoom,Scale,a.radius,a.meshCount,a.endPointA?.join(','),a.endPointB?.join(','),a instanceof Dipole?a.feedSeparation():null].join('|');
   const old=componentGeometryCache.get(a);
   if(old&&old.key===key&&old.segments===a.segments)return old.edges;
   const edges=a.getDisplayEdges();componentGeometryCache.set(a,{key,segments:a.segments,edges});return edges;
