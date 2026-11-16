@@ -401,7 +401,7 @@ class EndFedAntenna extends Dipole {
     {key:'counterpoise',label:'Counterpoise · % of total length',options:[['5','5%'],['10','10%'],['15','15%'],['20','20%'],['25','25%']],get:()=>String(Math.round(100*this.feedFraction)),set:v=>{this.feedFraction=Number(v)/100;this.rebuild();}}
   ];}
   getReadouts(){return [...super.getReadouts(),['Counterpoise length',(this.length*this.feedFraction).toFixed(4)],['Radiating arm length',(this.length*(1-this.feedFraction)).toFixed(4)]];}
-  getNotes(){return [{text:'First endpoint = counterpoise tip; second endpoint = long-arm tip. The feed is at the marked junction. This is an unbalanced two-arm antenna; it does not assume an invisible ground, matching transformer, or coax shield.'},...super.getNotes()];}
+  getNotes(){return [{text:'First endpoint is the counterpoise tip; second endpoint is the long-arm tip. The feed is at the marked junction. This is an unbalanced two-arm antenna.'},...super.getNotes()];}
 }
 
 
