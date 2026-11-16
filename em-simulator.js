@@ -388,7 +388,7 @@ class Dipole extends PassiveWire {
     ...super.getReadouts()];}
   getNotes(){return [
     ...(this.feedMode==='open'?[{text:'Open-circuit feed: net port current is constrained to zero and the induced terminal voltage is solved from all sources and scattering bodies. It is distinct from setting a voltage source to zero, which shorts the feed.'}]:[{text:'Ideal voltage source across a narrow feed region; zero source impedance. Voltage and current amplitudes are peak phasors in simulation units.'}]),
-    {text:'The feed uses a uniform impressed electric field over a short region. An equivalent axial electric current is retained through that region; detailed feed geometry and gap capacitance are not resolved.'},
+    {text:'The feed uses a uniform impressed electric field over a short region.'},
     ...super.getNotes()];}
 }
 // A physically closed port requires a return conductor. The short A-side arm
@@ -490,7 +490,7 @@ class RectangularLoop extends Dipole {
     ...super.getProperties()
   ];}
   getReadouts(){return super.getReadouts().map(([label,value])=>label==='Feed'?[label,'Rectangular loop · side-centred gap']:label==='Length / wavelength · L/λ'?['Perimeter / wavelength · P/λ',value]:label==='Segments'?[label,String(this.panels.length)]:[label,value]);}
-  getNotes(){return [{text:'Connected rectangular thin-wire contour with continuous scalar current at every corner. Dimensions default to λ/4 × λ/4 at creation and remain fixed when frequency or wave speed changes. Loop interactions use a regularized thin-wire Galerkin kernel; corner details and gap capacitance are not resolved.'},...super.getNotes()];}
+  getNotes(){return [{text:'Connected rectangular thin-wire contour with continuous scalar current at every corner. Dimensions default to λ/4 × λ/4 at creation and remain fixed when frequency or wave speed changes.'},...super.getNotes()];}
 }
 
 // The user draws the trace of an INFINITE PEC plane. The plane is perpendicular
@@ -1126,7 +1126,7 @@ function sourcePowerReadouts(a){
 function formatAveragePower(x){return Math.abs(x)<1e-12?'0':(x>0?'+':'')+x.toPrecision(5);}
 function sourcePowerNotes(a){
   if(a instanceof PECPlane||a instanceof PECSlot||(a instanceof PassiveWire&&!(a instanceof Dipole)))return [];
-  return [{text:'Average power contribution: positive supplies net power to the electromagnetic field; negative absorbs net power into the source. Values are in simulation units, not watts.'}];
+  return [{text:'Average power contribution: positive supplies net power to the electromagnetic field; negative absorbs net power into the source. Values are in simulation units.'}];
 }
 function updateScenePowerReadouts(){
   const total=document.getElementById('em-scene-radiated-power'),balance=document.getElementById('em-power-balance'),note=document.getElementById('em-power-diagnostic-note');
